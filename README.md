@@ -11,9 +11,10 @@ target/release/desktouch.exe
 
 ## Utilisation
 
-- Le carré n'apparaît que quand le **bureau** est au premier plan (clic sur le fond d'écran, Win + D).
+- Le carré vit **sur le bureau**, comme une icône : toujours là sur le fond d'écran, sous toutes les fenêtres, et Win + D ne le cache pas.
 - Survol : le panneau s'ouvre ; clic sur une tuile : lance l'application. Le carré reste en place.
-- Glisser le carré fermé : le déplacer (position gardée). Clic simple : ouvrir / fermer.
+- Appuyer sur le carré et bouger : le déplacer où tu veux, même sur un autre écran (position gardée). Clic simple : ouvrir / fermer.
+- Glisser une tuile sur une autre : changer l'ordre (gardé dans `ordre.txt`).
 - **Ajouter** (dernière tuile, ou menu) : choisis une application, un raccourci ou un jeu dans la fenêtre « Ouvrir ».
 - Clic droit sur une tuile : la retirer. Clic droit ailleurs : menu.
 
@@ -27,7 +28,7 @@ Dans les icônes cachées de la barre des tâches :
 ## Fichiers à côté de l'exe
 
 - `Raccourcis/` : les raccourcis du panneau (`.lnk`, `.url`), triés par ordre alphabétique.
-- `reglages.txt`, `position.txt` : réglages et position du carré.
+- `reglages.txt`, `position.txt`, `ordre.txt` : réglages, position du carré, ordre des tuiles.
 
 ## Crédits
 

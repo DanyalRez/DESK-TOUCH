@@ -200,9 +200,7 @@ pub struct Look {
 /// Tout ce qu'il faut pour dessiner une image.
 pub struct Frame<'a> {
     pub back: &'a Back,
-    pub layer: &'a Layer,
-    pub layer_pos: (i32, i32),
-    pub layer_alpha: f32,
+    pub layers: &'a [(&'a Layer, (i32, i32), f32)], // calques (tuiles, textes) : position, opacité ; le dernier dessus
     pub a: Rr,
     pub b: Option<Rr>, // seconde forme fusionnée à la première
     pub smooth: f32,   // rayon de fusion entre les deux formes
@@ -326,11 +324,13 @@ fn shade(f: &Frame, bb: Rr, x: f32, y: f32) -> u32 {
     }
 
     // contenu (icônes, libellés)
-    let (lx, ly) = (x as i32 - f.layer_pos.0, y as i32 - f.layer_pos.1);
-    if f.layer_alpha > 0.003 && lx >= 0 && ly >= 0 && (lx as usize) < f.layer.w && (ly as usize) < f.layer.h {
-        let c = f.layer.px[ly as usize * f.layer.w + lx as usize];
-        let a = c[3] * f.layer_alpha;
-        col = std::array::from_fn(|i| c[i] * f.layer_alpha + col[i] * (1.0 - a));
+    for &(layer, (px, py), alpha) in f.layers {
+        let (lx, ly) = (x as i32 - px, y as i32 - py);
+        if alpha > 0.003 && lx >= 0 && ly >= 0 && (lx as usize) < layer.w && (ly as usize) < layer.h {
+            let c = layer.px[ly as usize * layer.w + lx as usize];
+            let a = c[3] * alpha;
+            col = std::array::from_fn(|i| c[i] * alpha + col[i] * (1.0 - a));
+        }
     }
 
     // liseré : lumière directionnelle à 45° (haut-gauche, bas-droite) plus un peu tout autour
@@ -406,9 +406,9 @@ mod tests {
         assert!(sd_rrect((50.0, 20.0), (50.0, 20.0), 10.0) > 4.0);
     }
 
-    fn frame<'a>(back: &'a Back, layer: &'a Layer, b: Option<Rr>, smooth: f32) -> Frame<'a> {
+    fn frame<'a>(back: &'a Back, _layer: &'a Layer, b: Option<Rr>, smooth: f32) -> Frame<'a> {
         Frame {
-            back, layer, layer_pos: (0, 0), layer_alpha: 0.0,
+            back, layers: &[],
             a: Rr { x: 10.0, y: 10.0, w: 40.0, h: 40.0, r: 12.0 }, b, smooth,
             refr_height: 10.0, refr_amount: 20.0, glyph: false, pills: &[], alpha: 1.0, scale: 1.0,
             look: Look { refraction: 1.0, tint: [1.0; 3], tint_amount: 0.0, ink: [1.0; 3] },

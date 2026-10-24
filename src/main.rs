@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
-//! DESKTOUCH : un petit carré de verre sur le bureau ; au survol, un panneau de raccourcis en sort
-//! comme une goutte. Visible seulement quand le bureau est au premier plan.
+//! DESKTOUCH : un petit carré de verre posé sur le bureau ; au survol, un panneau de raccourcis en
+//! sort comme une goutte. Il vit sur le bureau, sous toutes les fenêtres, comme une icône.
 //! Zéro CPU au repos : on ne calcule des images que pendant une animation, cadencées sur l'écran.
 
 mod render;
@@ -12,7 +12,6 @@ use std::{
     cell::{Cell as StdCell, RefCell},
     mem::zeroed,
     ptr::null,
-    sync::atomic::{AtomicIsize, Ordering},
     time::Instant,
 };
 use windows_sys::Win32::{
@@ -20,7 +19,6 @@ use windows_sys::Win32::{
     Graphics::{Dwm::DwmFlush, Gdi::*},
     System::{Com::CoInitializeEx, LibraryLoader::GetModuleHandleW},
     UI::{
-        Accessibility::{SetWinEventHook, HWINEVENTHOOK},
         HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2},
         Input::KeyboardAndMouse::*,
         Shell::ShellExecuteW,
@@ -31,7 +29,6 @@ use windows_sys::Win32::{
 const WM_MOUSELEAVE: u32 = 0x02A3; // absent de windows-sys
 const WM_DPICHANGED: u32 = 0x02E0;
 const WM_TRAY: u32 = WM_APP + 1;
-const WM_FOREGROUND: u32 = WM_APP + 2;
 const T_OPEN: usize = 1;
 const T_CLOSE: usize = 2;
 const ID_SETTINGS: usize = 1;
@@ -53,7 +50,6 @@ const MAX_COLS: usize = 4;
 const PREFS_W: f32 = 340.0;
 const PREFS_H: f32 = 246.0;
 
-static MAIN: AtomicIsize = AtomicIsize::new(0);
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
     static TASKBAR_CREATED: StdCell<u32> = const { StdCell::new(0) };
@@ -173,7 +169,15 @@ struct App {
     press: Spring,
     hover: i32,
     tracking: bool,
-    desktop: bool,
+    // tuiles : un calque chacune, position animée (relative au panneau) pour le glisser-déposer
+    tiles: Vec<Layer>,
+    tx: Vec<Spring>,
+    ty: Vec<Spring>,
+    press_sq: Option<(f32, f32)>,             // bouton enfoncé sur le carré (clic ou début de déplacement)
+    press_tile: Option<(usize, (f32, f32))>, // bouton enfoncé sur une tuile (clic ou début de glisser)
+    drag: Option<usize>,                     // tuile en train d'être déplacée
+    grab: (f32, f32),                        // où on l'a attrapée, dans la tuile
+    cursor: (f32, f32),
     // réglages
     prefs: Surface,
     prefs_shown: bool,
@@ -267,13 +271,32 @@ impl App {
         self.rebuild_main_layer();
     }
 
+    /// Recrée le calque de chaque tuile et les pose à leur place.
     unsafe fn rebuild_main_layer(&mut self) {
-        let (pw, ph) = self.panel_size();
         let cells = self.cells();
         let ink = self.look(&self.main).ink;
-        self.main.layer = shell::tiles_layer(&self.items, &cells, pw as usize, ph as usize,
-            self.px(ICON).round() as usize, self.scale, ink);
+        let (cw, ch, icon) = (cells[0].w as usize, cells[0].h as usize, self.px(ICON).round() as usize);
+        self.tiles = (0..cells.len()).map(|i| shell::tile_layer(self.items.get(i), cw, ch, icon, self.scale, ink)).collect();
+        self.tx = cells.iter().map(|c| Spring::new(c.x as f32, 380.0, 0.8)).collect();
+        self.ty = cells.iter().map(|c| Spring::new(c.y as f32, 380.0, 0.8)).collect();
         self.dirty_main = true;
+    }
+
+    /// Glisser-déposer : la tuile `from` prend la place `to`, les autres se décalent en douceur.
+    fn move_tile(&mut self, from: usize, to: usize) {
+        let it = self.items.remove(from);
+        self.items.insert(to, it);
+        let l = self.tiles.remove(from);
+        self.tiles.insert(to, l);
+        let (sx, sy) = (self.tx.remove(from), self.ty.remove(from));
+        self.tx.insert(to, sx);
+        self.ty.insert(to, sy);
+        for (i, c) in self.cells().iter().enumerate() {
+            self.tx[i].target = c.x as f32;
+            self.ty[i].target = c.y as f32;
+        }
+        self.drag = Some(to);
+        self.kick();
     }
 
     unsafe fn reload(&mut self, force: bool) {
@@ -286,9 +309,7 @@ impl App {
     }
 
     fn vis_target(&self) -> f32 {
-        if !self.desktop {
-            0.0
-        } else if self.tracking || self.open.target > 0.5 {
+        if self.tracking || self.open.target > 0.5 {
             1.0
         } else {
             self.cfg.opacity
@@ -308,11 +329,18 @@ impl App {
                 h: self.px(CELL_H) - 2.0 * inset, r: self.px(20.0) },
             color: accent(&look), amount: 0.15 * blob, rim: 0.55 * blob,
         }];
+        let slide = (1.0 - content) * self.px(8.0);
+        let mut layers: Vec<(&Layer, (i32, i32), f32)> = (0..self.tiles.len()).filter(|&i| Some(i) != self.drag).map(|i| {
+            (&self.tiles[i], ((panel.x + self.tx[i].x).round() as i32, (panel.y + self.ty[i].x + slide).round() as i32), content)
+        }).collect();
+        if let Some(d) = self.drag {
+            // la tuile tenue suit la souris, par-dessus les autres
+            let pos = ((self.cursor.0 - self.grab.0).round() as i32, (self.cursor.1 - self.grab.1).round() as i32);
+            layers.push((&self.tiles[d], pos, content));
+        }
         let f = Frame {
             back: &self.main.back,
-            layer: &self.main.layer,
-            layer_pos: (panel.x.round() as i32, (panel.y + (1.0 - content) * self.px(8.0)).round() as i32),
-            layer_alpha: content,
+            layers: &layers,
             a: self.square(),
             b: self.panel_at(o),
             // fusion forte au départ (la goutte s'étire), puis les deux formes se détachent
@@ -336,9 +364,6 @@ impl App {
     }
 
     unsafe fn begin_open(&mut self) {
-        if !self.desktop {
-            return;
-        }
         self.reload(false);
         self.recapture();
         self.open.damping = 0.74; // léger rebond à l'ouverture
@@ -352,18 +377,6 @@ impl App {
         self.open.target = 0.0;
         self.blob.target = 0.0;
         self.hover = -1;
-        self.vis.target = self.vis_target();
-        self.kick();
-    }
-
-    fn set_desktop(&mut self, d: bool) {
-        if d == self.desktop {
-            return;
-        }
-        self.desktop = d;
-        if !d {
-            self.close();
-        }
         self.vis.target = self.vis_target();
         self.kick();
     }
@@ -490,9 +503,7 @@ impl App {
         ];
         let f = Frame {
             back: &self.prefs.back,
-            layer: &self.prefs.layer,
-            layer_pos: (p.x as i32, p.y as i32),
-            layer_alpha: content,
+            layers: &[(&self.prefs.layer, (p.x as i32, p.y as i32), content)],
             a: shape,
             b: None,
             smooth: 0.0,
@@ -535,8 +546,10 @@ impl App {
 
     // ---------- boucle d'animation ----------
 
-    fn main_springs(&mut self) -> [&mut Spring; 6] {
-        [&mut self.open, &mut self.vis, &mut self.bx, &mut self.by, &mut self.blob, &mut self.press]
+    fn main_springs(&mut self) -> Vec<&mut Spring> {
+        let mut v = vec![&mut self.open, &mut self.vis, &mut self.bx, &mut self.by, &mut self.blob, &mut self.press];
+        v.extend(self.tx.iter_mut().chain(self.ty.iter_mut()));
+        v
     }
     fn prefs_springs(&mut self) -> [&mut Spring; 4] {
         [&mut self.p_open, &mut self.p_seg, &mut self.p_knob, &mut self.p_tog]
@@ -595,8 +608,8 @@ unsafe fn add_flow(h: HWND) {
     }
 }
 
-unsafe extern "system" fn win_event(_: HWINEVENTHOOK, _: u32, _: HWND, _: i32, _: i32, _: u32, _: u32) {
-    PostMessageW(MAIN.load(Ordering::Relaxed) as HWND, WM_FOREGROUND, 0, 0);
+fn moved(a: (f32, f32), b: (f32, f32), min: f32) -> bool {
+    (a.0 - b.0).abs() > min || (a.1 - b.1).abs() > min
 }
 
 unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -609,6 +622,51 @@ unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
         WM_MOUSEACTIVATE => MA_NOACTIVATE as isize,
         WM_MOUSEMOVE => {
             let (x, y) = lparam_xy(lp);
+            // bouton enfoncé sur le carré et la souris bouge : on le déplace (Windows suit la souris)
+            let grab_square = app(|a| {
+                let start = a.press_sq?;
+                if !moved(start, (x, y), a.px(4.0)) {
+                    return None;
+                }
+                a.press_sq = None;
+                a.tracking = false; // Windows prend la souris pendant le déplacement : on réarme le survol après
+                a.close();
+                a.open.snap(0.0);
+                a.blob.snap(0.0);
+                a.draw_main();
+                Some(())
+            });
+            if grab_square.is_some() {
+                KillTimer(h, T_OPEN);
+                ReleaseCapture();
+                SendMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+                return 0;
+            }
+            // bouton enfoncé sur une tuile et la souris bouge : glisser-déposer pour changer l'ordre
+            let dragging = app(|a| {
+                if let Some((i, start)) = a.press_tile {
+                    if a.drag.is_none() && moved(start, (x, y), a.px(6.0)) {
+                        let p = a.panel();
+                        a.grab = (start.0 - p.x - a.tx[i].x, start.1 - p.y - a.ty[i].x);
+                        a.drag = Some(i);
+                        a.blob.target = 0.0;
+                        a.press.target = 0.0;
+                    }
+                }
+                let Some(d) = a.drag else { return false };
+                a.cursor = (x, y);
+                let p = a.panel();
+                let j = hit(x - p.x - a.px(PAD), y - p.y - a.px(PAD), a.cols(), a.items.len(), a.px(CELL_W), a.px(CELL_H));
+                if j >= 0 && j as usize != d {
+                    a.move_tile(d, j as usize);
+                }
+                a.dirty_main = true;
+                a.kick();
+                true
+            });
+            if dragging {
+                return 0;
+            }
             let enter = app(|a| !std::mem::replace(&mut a.tracking, true));
             if enter {
                 let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -631,7 +689,10 @@ unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             // changer l'exclusion de capture déclenche une fausse sortie : on vérifie la souris
             let mut c: POINT = zeroed();
             GetCursorPos(&mut c);
-            let inside = app(|a| a.over_shape((c.x - a.main.win.left) as f32, (c.y - a.main.win.top) as f32));
+            let inside = app(|a| {
+                a.press_sq.is_some() || a.press_tile.is_some()
+                    || a.over_shape((c.x - a.main.win.left) as f32, (c.y - a.main.win.top) as f32)
+            });
             if inside {
                 let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
                     dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
@@ -658,58 +719,69 @@ unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             }
             0
         }
+        // on attend de voir si la souris bouge : clic (ouvrir, lancer) ou glisser (déplacer, réordonner)
         WM_LBUTTONDOWN => {
             let (x, y) = lparam_xy(lp);
-            // sur le carré : fermé, on le déplace (ou on l'ouvre d'un clic) ; ouvert, un clic le referme
-            let on_square = app(|a| {
-                if !a.square().contains(x, y) {
+            let capture = app(|a| {
+                if a.square().contains(x, y) {
+                    a.press_sq = Some((x, y));
+                    return true;
+                }
+                if a.open.x > 0.85 && a.hover >= 0 {
                     a.press.target = 1.0;
                     a.kick();
-                    return None;
+                    if (a.hover as usize) < a.items.len() {
+                        a.press_tile = Some((a.hover as usize, (x, y)));
+                    }
+                    return true;
                 }
-                if a.open.x > 0.3 {
-                    a.close();
-                    return None;
-                }
-                a.open.snap(0.0);
-                a.draw_main();
-                Some(a.main.win)
+                false
             });
-            if let Some(before) = on_square {
+            if capture {
                 KillTimer(h, T_OPEN);
-                ReleaseCapture();
-                SendMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
-                let mut after: RECT = zeroed();
-                GetWindowRect(h, &mut after);
-                if (after.left, after.top) == (before.left, before.top) {
-                    app(|a| a.begin_open()); // simple clic
-                }
+                SetCapture(h);
             }
             0
         }
         WM_LBUTTONUP => {
-            enum Click { Launch(Vec<u16>), Add, Nothing }
+            enum Click { Toggle, Launch(Vec<u16>), Add, Dropped, Nothing }
             let click = app(|a| {
                 a.press.target = 0.0;
                 a.kick();
+                if a.press_sq.take().is_some() {
+                    return Click::Toggle;
+                }
+                let tile = a.press_tile.take();
+                if let Some(d) = a.drag.take() {
+                    // la tuile lâchée glisse depuis la souris jusqu'à sa place
+                    let p = a.panel();
+                    a.tx[d].x = a.cursor.0 - a.grab.0 - p.x;
+                    a.ty[d].x = a.cursor.1 - a.grab.1 - p.y;
+                    shell::save_order(&a.items);
+                    a.hover = -1;
+                    return Click::Dropped;
+                }
                 if a.open.x <= 0.85 || a.hover < 0 {
                     return Click::Nothing;
                 }
                 match a.items.get(a.hover as usize) {
-                    Some(it) => {
+                    Some(it) if tile.is_some() => {
                         let p = it.path.clone();
                         a.close();
                         Click::Launch(p)
                     }
                     None => Click::Add,
+                    _ => Click::Nothing,
                 }
             });
+            ReleaseCapture();
             match click {
+                Click::Toggle => app(|a| if a.open.target > 0.5 { a.close() } else { a.begin_open() }),
                 Click::Launch(path) => {
                     ShellExecuteW(null_mut(), shell::w("open").as_ptr(), path.as_ptr(), null(), null(), SW_SHOWNORMAL);
                 }
                 Click::Add => add_flow(h),
-                Click::Nothing => {}
+                Click::Dropped | Click::Nothing => {}
             }
             0
         }
@@ -746,12 +818,6 @@ unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
                 a.recapture();
                 a.draw_main();
             });
-            0
-        }
-        WM_FOREGROUND => {
-            if let Some(d) = shell::foreground_is_desktop() {
-                app(|a| a.set_desktop(d));
-            }
             0
         }
         WM_TRAY => {
@@ -885,20 +951,20 @@ fn main() {
             main_class.as_ptr(), main_class.as_ptr(), WS_POPUP, 0, 0, 1, 1, null_mut(), null_mut(), inst, null());
         let ph = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TOPMOST,
             prefs_class.as_ptr(), prefs_class.as_ptr(), WS_POPUP, 0, 0, 1, 1, null_mut(), null_mut(), inst, null());
-        MAIN.store(h as isize, Ordering::Relaxed);
         let scale = GetDpiForWindow(h) as f32 / 96.0;
         let (sq_x, sq_y) = start_pos(scale);
         let (items, loaded) = shell::load_items(None).unwrap_or_default();
-        let desktop = shell::foreground_is_desktop().unwrap_or(false);
         let mut a = App {
             cfg, scale, main: Surface::new(h), items, loaded, sq_x, sq_y, right: true, down: true,
             open: Spring::new(0.0, 260.0, 1.0),
-            vis: Spring::new(if desktop { cfg.opacity } else { 0.0 }, 200.0, 1.0),
+            vis: Spring::new(cfg.opacity, 200.0, 1.0),
             bx: Spring::new(0.0, 520.0, 0.82),
             by: Spring::new(0.0, 520.0, 0.82),
             blob: Spring::new(0.0, 400.0, 1.0),
             press: Spring::new(0.0, 700.0, 0.7),
-            hover: -1, tracking: false, desktop,
+            hover: -1, tracking: false,
+            tiles: Vec::new(), tx: Vec::new(), ty: Vec::new(),
+            press_sq: None, press_tile: None, drag: None, grab: (0.0, 0.0), cursor: (0.0, 0.0),
             prefs: Surface::new(ph), prefs_shown: false,
             p_open: Spring::new(0.0, 320.0, 0.82),
             p_seg: Spring::new(0.0, 420.0, 0.78),
@@ -911,13 +977,7 @@ fn main() {
         a.draw_main();
         APP.with_borrow_mut(|s| *s = Some(a));
         ShowWindow(h, SW_SHOWNOACTIVATE);
-        // juste au-dessus du bureau : visible sur le fond d'écran, caché par toute fenêtre ouverte
-        let desk = FindWindowW(shell::w("Progman").as_ptr(), null());
-        if !desk.is_null() {
-            SetWindowPos(h, desk, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
-        // n'apparaître que quand le bureau est au premier plan (événement système, pas de sondage)
-        SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, null_mut(), Some(win_event), 0, 0, WINEVENT_OUTOFCONTEXT);
+        shell::pin_to_desktop(h); // après l'affichage, qui sinon la remonte devant les fenêtres
         TASKBAR_CREATED.set(RegisterWindowMessageW(shell::w("TaskbarCreated").as_ptr()));
         shell::tray(h, WM_TRAY, true);
 

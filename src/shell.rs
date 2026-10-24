@@ -37,6 +37,7 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 pub struct Item {
     pub name: String,
+    pub file: String, // nom du fichier dans le dossier, sert à retenir l'ordre
     pub path: Vec<u16>,                  // terminé par 0, prêt pour ShellExecute
     pub icon: Option<(usize, Vec<u32>)>, // côté, BGRA prémultiplié en pleine définition
 }
@@ -117,6 +118,17 @@ pub fn save_pos(x: i32, y: i32) {
     let _ = std::fs::write(beside_exe("position.txt"), format!("{x} {y}"));
 }
 
+/// Rang d'un fichier : sa place dans l'ordre enregistré, sinon après, par ordre alphabétique.
+pub fn sort_key(order: &[&str], file: &str) -> (usize, String) {
+    let lower = file.to_lowercase();
+    (order.iter().position(|o| o.to_lowercase() == lower).unwrap_or(usize::MAX), lower)
+}
+
+pub fn save_order(items: &[Item]) {
+    let s: Vec<&str> = items.iter().map(|it| it.file.as_str()).collect();
+    let _ = std::fs::write(beside_exe("ordre.txt"), s.join("\n"));
+}
+
 /// Lancement à l'ouverture de session ; réécrit à chaque démarrage pour suivre l'exe s'il a bougé.
 pub unsafe fn set_startup(on: bool) {
     if !on {
@@ -157,11 +169,15 @@ pub unsafe fn load_items(loaded: Option<std::time::SystemTime>) -> Option<(Vec<I
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect())
         .unwrap_or_default();
-    files.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+    // ordre choisi par glisser-déposer, puis alphabétique pour les nouveaux venus
+    let order = std::fs::read_to_string(beside_exe("ordre.txt")).unwrap_or_default();
+    let order: Vec<&str> = order.lines().collect();
+    files.sort_by_key(|p| sort_key(&order, &p.file_name().unwrap_or_default().to_string_lossy()));
     let items = files.iter().map(|p| {
         let path = wide_path(p);
         let name = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        Item { name, icon: file_icon(&path), path }
+        let file = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        Item { name, file, icon: file_icon(&path), path }
     }).collect();
     Some((items, stamp))
 }
@@ -374,30 +390,28 @@ pub struct Cell {
     pub h: i32,
 }
 
-/// Calque du panneau : libellés, « + » d'ajout, puis logos par-dessus.
-pub unsafe fn tiles_layer(items: &[Item], cells: &[Cell], pw: usize, ph: usize, icon: usize, s: f32, ink: Rgb) -> Layer {
+/// Calque d'une tuile (logo + libellé) ; `None` : la tuile « Ajouter ». Une tuile = un calque, pour
+/// pouvoir les faire glisser une par une.
+pub unsafe fn tile_layer(item: Option<&Item>, cw: usize, ch: usize, icon: usize, s: f32, ink: Rgb) -> Layer {
     let icon_top = (10.0 * s) as i32;
-    let mut texts: Vec<Text> = cells.iter().enumerate().map(|(i, c)| Text {
-        s: items.get(i).map_or("Ajouter", |it| it.name.as_str()),
-        r: RECT { left: c.x + (5.0 * s) as i32, right: c.x + c.w - (5.0 * s) as i32,
-            top: c.y + icon_top + icon as i32 + (6.0 * s) as i32, bottom: c.y + c.h },
+    let ix = (cw - icon) as i32 / 2;
+    let mut texts = vec![Text {
+        s: item.map_or("Ajouter", |it| it.name.as_str()),
+        r: RECT { left: (5.0 * s) as i32, right: cw as i32 - (5.0 * s) as i32, top: icon_top + icon as i32 + (6.0 * s) as i32, bottom: ch as i32 },
         size: 12.5 * s, weight: 500, flags: DT_CENTER | DT_TOP | DT_END_ELLIPSIS, level: 1.0, glyph: false,
-    }).collect();
-    if let Some(c) = cells.get(items.len()) {
-        let ix = c.x + (c.w - icon as i32) / 2;
-        texts.push(Text { s: "\u{E710}", r: RECT { left: ix, right: ix + icon as i32, top: c.y + icon_top, bottom: c.y + icon_top + icon as i32 },
+    }];
+    if item.is_none() {
+        texts.push(Text { s: "\u{E710}", r: RECT { left: ix, right: ix + icon as i32, top: icon_top, bottom: icon_top + icon as i32 },
             size: 26.0 * s, weight: 400, flags: DT_CENTER | DT_VCENTER, level: 1.0, glyph: true });
     }
-    let mut layer = text_layer(pw, ph, &texts, ink);
-    for (it, c) in items.iter().zip(cells) {
-        let Some((ss, raw)) = &it.icon else { continue };
+    let mut layer = text_layer(cw, ch, &texts, ink);
+    if let Some((ss, raw)) = item.and_then(|it| it.icon.as_ref()) {
         let ic = downsample(raw, *ss, icon);
-        let (ox, oy) = (c.x as usize + (c.w as usize - icon) / 2, (c.y + icon_top) as usize);
         for y in 0..icon {
             for x in 0..icon {
-                let (dx, dy) = (ox + x, oy + y);
-                if dx < pw && dy < ph {
-                    let (src, d) = (ic[y * icon + x], &mut layer.px[dy * pw + dx]);
+                let (dx, dy) = (ix as usize + x, icon_top as usize + y);
+                if dx < cw && dy < ch {
+                    let (src, d) = (ic[y * icon + x], &mut layer.px[dy * cw + dx]);
                     *d = std::array::from_fn(|k| src[k] + d[k] * (1.0 - src[3]));
                 }
             }
@@ -506,25 +520,16 @@ pub unsafe fn menu(hwnd: HWND, entries: &[(usize, &str)]) -> usize {
     id as usize
 }
 
-/// Le bureau est-il au premier plan ? None : fenêtre neutre (barre des tâches, menu Démarrer, nos fenêtres).
-pub unsafe fn foreground_is_desktop() -> Option<bool> {
-    let fg = GetForegroundWindow();
-    if fg.is_null() {
-        return None;
+/// Accroche la fenêtre au bureau, comme un gadget : elle a le bureau pour propriétaire, reste donc juste
+/// au-dessus du fond d'écran, sous toutes les autres fenêtres, et Win + D ne la cache pas.
+pub unsafe fn pin_to_desktop(hwnd: HWND) {
+    let desk = FindWindowW(w("Progman").as_ptr(), null());
+    if desk.is_null() {
+        return;
     }
-    let mut pid = 0;
-    GetWindowThreadProcessId(fg, &mut pid);
-    if pid == std::process::id() {
-        return None;
-    }
-    let mut buf = [0u16; 64];
-    let n = GetClassNameW(fg, buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
-    match String::from_utf16_lossy(&buf[..n]).as_str() {
-        "Progman" | "WorkerW" => Some(true),
-        "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "NotifyIconOverflowWindow" | "TopLevelWindowForOverflowXamlIsland"
-        | "Windows.UI.Core.CoreWindow" | "XamlExplorerHostIslandWindow" | "#32768" => None,
-        _ => Some(false),
-    }
+    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, desk as isize);
+    // tout en bas : une fenêtre possédée ne passe jamais sous son propriétaire, elle s'arrête donc sur le bureau
+    SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 #[cfg(test)]
@@ -537,6 +542,14 @@ mod tests {
         assert_eq!(parse_pos("-1500 40\n"), Some((-1500, 40))); // écran à gauche du principal
         assert_eq!(parse_pos("60"), None);
         assert_eq!(parse_pos("abc 3"), None);
+    }
+
+    #[test]
+    fn saved_order_first_then_alphabetical() {
+        let order = ["Steam.lnk", "web.url"];
+        let mut files = vec!["Calculatrice.lnk", "Web.url", "Steam.lnk", "Bloc-notes.lnk"];
+        files.sort_by_key(|f| sort_key(&order, f));
+        assert_eq!(files, ["Steam.lnk", "Web.url", "Bloc-notes.lnk", "Calculatrice.lnk"]);
     }
 
     #[test]
