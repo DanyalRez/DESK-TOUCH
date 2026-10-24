@@ -926,7 +926,6 @@ unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
                 }
                 a.sq_x += dx;
                 a.sq_y += dy;
-                shell::save_pos(a.sq_x, a.sq_y);
                 a.relayout();
                 a.recapture();
                 a.draw_main();
@@ -1032,11 +1031,10 @@ unsafe extern "system" fn prefs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
 }
 
-/// Position enregistrée si elle tombe encore sur un écran branché, sinon en haut à gauche.
-unsafe fn start_pos(scale: f32) -> (i32, i32) {
-    shell::load_pos()
-        .filter(|&(x, y)| !MonitorFromPoint(POINT { x: x + 20, y: y + 20 }, MONITOR_DEFAULTTONULL).is_null())
-        .unwrap_or(((60.0 * scale) as i32, (120.0 * scale) as i32))
+/// Place de départ, en haut à gauche de l'écran principal : le carré y revient à chaque lancement
+/// (le déplacer ne vaut que pour la session, demande de l'utilisateur).
+fn start_pos(scale: f32) -> (i32, i32) {
+    ((60.0 * scale) as i32, (120.0 * scale) as i32)
 }
 
 fn null_mut<T>() -> *mut T {

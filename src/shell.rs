@@ -114,20 +114,6 @@ pub fn save_config(c: &Config) {
     let _ = std::fs::write(beside_exe("reglages.txt"), s);
 }
 
-/// Position enregistrée « x y ».
-pub fn parse_pos(s: &str) -> Option<(i32, i32)> {
-    let mut it = s.split_whitespace().map(|n| n.parse().ok());
-    Some((it.next()??, it.next()??))
-}
-
-pub fn load_pos() -> Option<(i32, i32)> {
-    std::fs::read_to_string(beside_exe("position.txt")).ok().and_then(|s| parse_pos(&s))
-}
-
-pub fn save_pos(x: i32, y: i32) {
-    let _ = std::fs::write(beside_exe("position.txt"), format!("{x} {y}"));
-}
-
 /// Rang d'un fichier : sa place dans l'ordre enregistré, sinon après, par ordre alphabétique.
 pub fn sort_key(order: &[&str], file: &str) -> (usize, String) {
     let lower = file.to_lowercase();
@@ -550,14 +536,6 @@ pub unsafe fn pin_to_desktop(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pos_parsing() {
-        assert_eq!(parse_pos("60 120"), Some((60, 120)));
-        assert_eq!(parse_pos("-1500 40\n"), Some((-1500, 40))); // écran à gauche du principal
-        assert_eq!(parse_pos("60"), None);
-        assert_eq!(parse_pos("abc 3"), None);
-    }
 
     #[test]
     fn saved_order_first_then_alphabetical() {
