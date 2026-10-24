@@ -13,7 +13,7 @@ target/release/desktouch.exe
 
 - Le carré vit **sur le bureau**, comme une icône : toujours là sur le fond d'écran, sous toutes les fenêtres, et Win + D ne le cache pas.
 - Survol : le panneau s'ouvre ; clic sur une tuile : lance l'application. Le carré reste en place.
-- Appuyer sur le carré et bouger : le déplacer où tu veux, même sur un autre écran. Au prochain lancement, il revient en haut à gauche. Clic simple : ouvrir / fermer.
+- Appuyer sur le carré et bouger : le déplacer où tu veux, même sur un autre écran (position gardée ; « Réinitialiser » dans les Réglages ou « Remettre le logo à sa place » dans le menu le ramène en haut à gauche). Clic simple : ouvrir / fermer.
 - Glisser une tuile sur une autre : changer l'ordre (gardé dans `ordre.txt`).
 - **Ajouter** (dernière tuile, ou menu) : choisis une application, un raccourci ou un jeu dans la fenêtre « Ouvrir ».
 - Clic droit sur une tuile : la retirer. Clic droit ailleurs : menu.
@@ -22,13 +22,13 @@ target/release/desktouch.exe
 
 Dans les icônes cachées de la barre des tâches :
 
-- clic : **Réglages** — thème (Liquid Glass, Sombre, Clair), taille des icônes, colonnes (3 à 6), ouverture au survol ou au clic, opacité du carré sur le bureau, noms affichés ou non (sur deux lignes, jamais coupés), lancement au démarrage ;
+- clic : **Réglages** — thème (Liquid Glass, Sombre, Clair), taille des icônes, colonnes (3 à 6), ouverture au survol ou au clic, opacité du carré sur le bureau, noms affichés ou non (sur deux lignes, jamais coupés), lancement au démarrage, réinitialiser la position du logo ;
 - clic droit : Réglages, Ajouter un raccourci, Ouvrir le dossier des raccourcis, Quitter.
 
 ## Fichiers à côté de l'exe
 
 - `Raccourcis/` : les raccourcis du panneau (`.lnk`, `.url`), triés par ordre alphabétique.
-- `reglages.txt`, `ordre.txt` : réglages, ordre des tuiles.
+- `reglages.txt`, `position.txt`, `ordre.txt` : réglages, position du carré, ordre des tuiles.
 
 ## Crédits
 

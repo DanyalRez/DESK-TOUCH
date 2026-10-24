@@ -36,6 +36,7 @@ const ID_ADD: usize = 2;
 const ID_FOLDER: usize = 3;
 const ID_QUIT: usize = 4;
 const ID_REMOVE: usize = 5;
+const ID_RESET: usize = 6;
 // tailles en pixels logiques (× échelle de l'écran)
 const SQ: f32 = 46.0;
 const SQ_R: f32 = 15.0;
@@ -52,9 +53,10 @@ enum Ctl {
     Seg(&'static [&'static str]),
     Slider,
     Toggle,
+    Button(&'static str),
 }
 
-const ROWS: [(&str, Ctl); 7] = [
+const ROWS: [(&str, Ctl); 8] = [
     ("Thème", Ctl::Seg(&shell::THEMES)),
     ("Taille des icônes", Ctl::Seg(&["Petite", "Moyenne", "Grande"])),
     ("Colonnes", Ctl::Seg(&["3", "4", "5", "6"])),
@@ -62,13 +64,14 @@ const ROWS: [(&str, Ctl); 7] = [
     ("Opacité du logo", Ctl::Slider),
     ("Afficher les noms", Ctl::Toggle),
     ("Lancer au démarrage", Ctl::Toggle),
+    ("Position du logo", Ctl::Button("Réinitialiser")),
 ];
 
 fn row_height(c: &Ctl) -> f32 {
     match c {
         Ctl::Seg(_) => 66.0,
         Ctl::Slider => 58.0,
-        Ctl::Toggle => 42.0,
+        Ctl::Toggle | Ctl::Button(_) => 42.0,
     }
 }
 
@@ -475,7 +478,8 @@ impl App {
             3 => c.click_open as u8 as f32,
             4 => (c.opacity - 0.15) / 0.85,
             5 => c.names as u8 as f32,
-            _ => c.startup as u8 as f32,
+            6 => c.startup as u8 as f32,
+            _ => 0.0, // bouton : la valeur ne sert qu'à l'éclat du clic
         }
     }
 
@@ -511,6 +515,18 @@ impl App {
         self.kick();
     }
 
+    /// Remet le carré à sa place de départ et oublie la position enregistrée.
+    unsafe fn reset_position(&mut self) {
+        (self.sq_x, self.sq_y) = default_pos(self.scale);
+        shell::forget_pos();
+        self.close();
+        self.open.snap(0.0);
+        self.relayout();
+        self.recapture();
+        self.draw_main();
+        self.kick();
+    }
+
     fn hide_prefs(&mut self) {
         self.p_open.target = 0.0;
         self.kick();
@@ -540,10 +556,15 @@ impl App {
                     }
                 }
                 Ctl::Slider => texts.push(label(name, r(22.0, y, 200.0, 18.0), 0.62, DT_LEFT | DT_VCENTER)),
-                Ctl::Toggle => {
-                    let mut t = label(name, r(22.0, y, 230.0, 40.0), 1.0, DT_LEFT | DT_VCENTER);
+                Ctl::Toggle | Ctl::Button(_) => {
+                    let mut t = label(name, r(22.0, y, 190.0, 40.0), 1.0, DT_LEFT | DT_VCENTER);
                     t.size = 13.5 * s;
                     texts.push(t);
+                    if let Ctl::Button(b) = ctl {
+                        let mut t = label(b, r(212.0, y + 6.0, 108.0, 28.0), 1.0, DT_CENTER | DT_VCENTER);
+                        t.weight = 600;
+                        texts.push(t);
+                    }
                 }
             }
         }
@@ -588,6 +609,8 @@ impl App {
                     pills.push(pill(at(272.0, y + 6.0, 48.0, 28.0, 14.0), ac, lerp(0.14, 0.6, v), 0.3));
                     pills.push(pill(at(275.0 + v * 20.0, y + 9.0, 22.0, 22.0, 11.0), [1.0; 3], 1.0, 0.6));
                 }
+                // bouton : s'éclaire au clic puis se calme
+                Ctl::Button(_) => pills.push(pill(at(212.0, y + 6.0, 108.0, 28.0, 14.0), ac, lerp(0.14, 0.45, v), 0.6)),
             }
         }
         let f = Frame {
@@ -622,6 +645,11 @@ impl App {
             Ctl::Slider => {
                 self.dragging = true;
                 return self.set_opacity_from(x);
+            }
+            Ctl::Button(_) => {
+                self.p_rows[i].snap(1.0);
+                self.p_rows[i].target = 0.0;
+                return self.reset_position();
             }
             Ctl::Toggle if i == 5 => self.cfg.names = !self.cfg.names,
             Ctl::Toggle => {
@@ -698,10 +726,12 @@ impl App {
 
 unsafe fn main_menu(h: HWND) {
     let id = shell::menu(h, &[(ID_SETTINGS, "Réglages"), (ID_ADD, "Ajouter un raccourci…"),
-        (ID_FOLDER, "Ouvrir le dossier des raccourcis"), (0, ""), (ID_QUIT, "Quitter DESKTOUCH")]);
+        (ID_FOLDER, "Ouvrir le dossier des raccourcis"), (ID_RESET, "Remettre le logo à sa place"), (0, ""),
+        (ID_QUIT, "Quitter DESKTOUCH")]);
     match id {
         ID_SETTINGS => app(|a| a.show_prefs()),
         ID_ADD => add_flow(h),
+        ID_RESET => app(|a| a.reset_position()),
         ID_FOLDER => {
             ShellExecuteW(null_mut(), shell::w("open").as_ptr(), shell::wide_path(&shell::folder()).as_ptr(), null(), null(), SW_SHOWNORMAL);
         }
@@ -926,6 +956,7 @@ unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
                 }
                 a.sq_x += dx;
                 a.sq_y += dy;
+                shell::save_pos(a.sq_x, a.sq_y);
                 a.relayout();
                 a.recapture();
                 a.draw_main();
@@ -996,6 +1027,7 @@ unsafe extern "system" fn prefs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     Ctl::Seg(_) => (t + 22.0..t + 56.0).contains(&y) && (20.0..320.0).contains(&x),
                     Ctl::Slider => (t + 14.0..t + 50.0).contains(&y) && (8.0..332.0).contains(&x),
                     Ctl::Toggle => (t..t + 40.0).contains(&y),
+                    Ctl::Button(_) => (t..t + 40.0).contains(&y) && (204.0..328.0).contains(&x),
                 }
             });
             if let Some(i) = row {
@@ -1031,10 +1063,16 @@ unsafe extern "system" fn prefs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
 }
 
-/// Place de départ, en haut à gauche de l'écran principal : le carré y revient à chaque lancement
-/// (le déplacer ne vaut que pour la session, demande de l'utilisateur).
-fn start_pos(scale: f32) -> (i32, i32) {
+/// Place de départ : en haut à gauche de l'écran principal.
+fn default_pos(scale: f32) -> (i32, i32) {
     ((60.0 * scale) as i32, (120.0 * scale) as i32)
+}
+
+/// Position enregistrée si elle tombe encore sur un écran branché, sinon la place de départ.
+unsafe fn start_pos(scale: f32) -> (i32, i32) {
+    shell::load_pos()
+        .filter(|&(x, y)| !MonitorFromPoint(POINT { x: x + 20, y: y + 20 }, MONITOR_DEFAULTTONULL).is_null())
+        .unwrap_or(default_pos(scale))
 }
 
 fn null_mut<T>() -> *mut T {
@@ -1087,6 +1125,7 @@ fn main() {
                 Ctl::Seg(_) => Spring::new(0.0, 420.0, 0.78),
                 Ctl::Slider => Spring::new(0.0, 900.0, 1.0),
                 Ctl::Toggle => Spring::new(0.0, 520.0, 0.75),
+                Ctl::Button(_) => Spring::new(0.0, 60.0, 1.0), // éclat qui s'éteint lentement
             }).collect(),
             dragging: false, dirty_main: false, dirty_prefs: false, animating: false, last: Instant::now(),
         };
