@@ -9,7 +9,10 @@ use windows_sys::{
     Win32::{
         Foundation::*,
         Graphics::{Dwm::*, Gdi::*},
-        System::{Com::CoInitializeEx, LibraryLoader::GetModuleHandleW, SystemInformation::GetTickCount64},
+        System::{
+            Com::CoInitializeEx, LibraryLoader::GetModuleHandleW,
+            Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ}, SystemInformation::GetTickCount64,
+        },
         UI::{
             Controls::{ImageList_GetIcon, HIMAGELIST, ILD_TRANSPARENT, MARGINS},
             Input::KeyboardAndMouse::*,
@@ -69,9 +72,41 @@ fn null_hwnd() -> HWND {
     std::ptr::null_mut()
 }
 
-fn folder() -> PathBuf {
+fn beside_exe(name: &str) -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
-    exe.parent().map(|p| p.join("Raccourcis")).unwrap_or_else(|| "Raccourcis".into())
+    exe.parent().map(|p| p.join(name)).unwrap_or_else(|| name.into())
+}
+
+fn folder() -> PathBuf {
+    beside_exe("Raccourcis")
+}
+
+/// Position enregistrée « x y », si elle tombe encore sur un écran branché.
+fn parse_pos(s: &str) -> Option<(i32, i32)> {
+    let mut it = s.split_whitespace().map(|n| n.parse().ok());
+    Some((it.next()??, it.next()??))
+}
+
+unsafe fn saved_pos() -> (i32, i32) {
+    std::fs::read_to_string(beside_exe("position.txt")).ok()
+        .and_then(|s| parse_pos(&s))
+        .filter(|&(x, y)| !MonitorFromPoint(POINT { x: x + 22, y: y + 22 }, MONITOR_DEFAULTTONULL).is_null())
+        .unwrap_or((X, Y))
+}
+
+unsafe fn save_pos(h: HWND) {
+    let mut r: RECT = zeroed();
+    GetWindowRect(h, &mut r);
+    let _ = std::fs::write(beside_exe("position.txt"), format!("{} {}", r.left, r.top));
+}
+
+/// Lancement à l'ouverture de session ; réécrit à chaque démarrage pour suivre l'exe s'il a bougé.
+/// Désactivable dans Gestionnaire des tâches > Applications de démarrage.
+unsafe fn register_startup() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let cmd = w(&format!("\"{}\"", exe.display()));
+    RegSetKeyValueW(HKEY_CURRENT_USER, w(r"Software\Microsoft\Windows\CurrentVersion\Run").as_ptr(),
+        w("DESKTOUCH").as_ptr(), REG_SZ, cmd.as_ptr() as _, (cmd.len() * 2) as u32);
 }
 
 /// Tuiles : les raccourcis, puis le « + » qui ouvre le dossier.
@@ -399,6 +434,11 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             DestroyWindow(h);
             0
         }
+        // fin d'un glisser-déplacer du carré
+        WM_EXITSIZEMOVE => {
+            save_pos(h);
+            0
+        }
         WM_DESTROY => {
             PostQuitMessage(0);
             0
@@ -420,9 +460,11 @@ fn main() {
             ..zeroed()
         };
         RegisterClassW(&wc);
+        register_startup();
+        let (x, y) = saved_pos();
         let h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
             class.as_ptr(), w("DESKTOUCH").as_ptr(), WS_POPUP,
-            X, Y, SMALL as i32, SMALL as i32, null_hwnd(), null_mut(), inst, null());
+            x, y, SMALL as i32, SMALL as i32, null_hwnd(), null_mut(), inst, null());
         SetLayeredWindowAttributes(h, 0, IDLE_ALPHA as u8, LWA_ALPHA);
         ShowWindow(h, SW_SHOWNOACTIVATE);
         // juste au-dessus du bureau : visible sur le fond d'écran, caché par toute fenêtre ouverte
@@ -457,6 +499,15 @@ mod tests {
         assert_eq!(hit(0, 0, n), -1);
         assert_eq!(hit(PAD + 4 * (TILE + GAP), PAD, n), -1);
         assert_eq!(hit(PAD + TILE + GAP, PAD, 1), -1); // une seule tuile
+    }
+
+    #[test]
+    fn pos_parsing() {
+        assert_eq!(parse_pos("60 120"), Some((60, 120)));
+        assert_eq!(parse_pos("-1500 40\n"), Some((-1500, 40))); // écran à gauche du principal
+        assert_eq!(parse_pos("60"), None);
+        assert_eq!(parse_pos("abc 3"), None);
+        assert_eq!(parse_pos(""), None);
     }
 
     #[test]

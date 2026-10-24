@@ -21,5 +21,9 @@ Le panneau affiche les fichiers du dossier `Raccourcis` placé à côté de `des
 ## Utilisation
 
 - Survol : le panneau s'ouvre ; clic sur une tuile : lance le raccourci.
-- Glisser le carré fermé : le déplacer.
+- Glisser le carré fermé : le déplacer (position gardée dans `position.txt`, à côté de l'exe ; si l'écran n'est plus branché, retour en haut à gauche).
 - Clic droit : quitter.
+
+## Démarrage avec Windows
+
+DESKTOUCH s'inscrit tout seul au démarrage de la session (clé `HKCU\…\Run`, mise à jour à chaque lancement si l'exe a bougé). Pour le désactiver : Gestionnaire des tâches > Applications de démarrage > DESKTOUCH > Désactiver.
