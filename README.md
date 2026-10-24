@@ -1,5 +1,7 @@
 # DESKTOUCH
 
+<img src="assets/desktouch-512.png" width="96" alt="Logo DESKTOUCH">
+
 Un petit carré de verre sur le bureau Windows, façon AssistiveTouch : au survol, un panneau de raccourcis en sort comme une goutte. Rust natif, verre liquide calculé maison (réfraction, dispersion, liseré lumineux), animations à ressort cadencées sur l'écran, 0 % de CPU au repos.
 
 ## Lancer
@@ -33,3 +35,7 @@ Dans les icônes cachées de la barre des tâches :
 ## Crédits
 
 Recette du verre adaptée d'[AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Kyant, Apache-2.0).
+
+## Logo
+
+`assets/desktouch.svg` (source), `assets/desktouch.ico` (16 à 256 px, intégré à l'exe par `build.rs` via `windres`). Pistes explorées : `docs/logo/`.

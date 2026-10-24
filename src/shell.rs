@@ -16,7 +16,7 @@ use windows_sys::{
         Graphics::{Dwm::DwmFlush, Gdi::*},
         System::{
             Com::{CoCreateInstance, CLSCTX_INPROC_SERVER},
-            LibraryLoader::{GetProcAddress, LoadLibraryW},
+            LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW},
             Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ},
         },
         UI::{
@@ -463,28 +463,11 @@ pub unsafe fn capture(hwnd: HWND, x: i32, y: i32, cw: usize, ch: usize) -> Back 
 
 // ---------- zone de notification ----------
 
-/// Icône de la zone de notification : le carré et ses 4 points, dessinés à la bonne taille.
+/// Icône de la zone de notification : le logo intégré à l'exe (assets/desktouch.ico), à la taille du système.
 unsafe fn tray_icon() -> HICON {
-    let n = GetSystemMetrics(SM_CXSMICON).max(16) as usize;
-    let s = n as f32 / 16.0;
-    let (color, bits) = dib(n as i32, n as i32);
-    let px = std::slice::from_raw_parts_mut(bits, n * n);
-    for (i, p) in px.iter_mut().enumerate() {
-        let (x, y) = ((i % n) as f32 + 0.5 - n as f32 / 2.0, (i / n) as f32 + 0.5 - n as f32 / 2.0);
-        let body = (0.5 - crate::render::sd_rrect((x, y), (n as f32 / 2.0 - 0.5, n as f32 / 2.0 - 0.5), 4.5 * s)).clamp(0.0, 1.0);
-        let q = (x.abs() - 2.4 * s, y.abs() - 2.4 * s);
-        let dot = (0.5 - crate::render::sd_rrect(q, (1.6 * s, 1.6 * s), 0.8 * s)).clamp(0.0, 1.0);
-        let v = 0.33 + 0.67 * dot; // gris foncé, points blancs
-        let a = body;
-        let c = (v * a * 255.0) as u32; // prémultiplié, attendu par CreateIconIndirect en 32 bits
-        *p = ((a * 255.0) as u32) << 24 | c << 16 | c << 8 | c;
-    }
-    let mask = CreateBitmap(n as i32, n as i32, 1, 1, null());
-    let info = ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
-    let icon = CreateIconIndirect(&info);
-    DeleteObject(mask);
-    DeleteObject(color);
-    icon
+    let n = GetSystemMetrics(SM_CXSMICON);
+    let icon = LoadImageW(GetModuleHandleW(null()), 1 as _, IMAGE_ICON, n, n, LR_DEFAULTCOLOR);
+    if icon.is_null() { LoadIconW(null_mut(), IDI_APPLICATION) } else { icon as HICON }
 }
 
 pub unsafe fn tray(hwnd: HWND, msg: u32, add: bool) {

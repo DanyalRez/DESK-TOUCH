@@ -317,9 +317,10 @@ fn shade(f: &Frame, bb: Rr, x: f32, y: f32) -> u32 {
     if f.glyph {
         let a = f.a;
         let p = (x - a.x - a.w * 0.5, y - a.y - a.h * 0.5);
-        let (size, gap) = (6.5 * s, 4.0 * s);
+        // mêmes proportions que le logo (assets/desktouch.svg) : points de 38/224, écart 22/224, rayon 11/38
+        let (size, gap) = (a.w * 38.0 / 224.0, a.w * 22.0 / 224.0);
         let q = (p.0.abs() - (gap + size) * 0.5, p.1.abs() - (gap + size) * 0.5);
-        let gc = (0.5 - sd_rrect(q, (size * 0.5, size * 0.5), 2.2 * s)).clamp(0.0, 1.0) * 0.92;
+        let gc = (0.5 - sd_rrect(q, (size * 0.5, size * 0.5), size * 11.0 / 38.0)).clamp(0.0, 1.0) * 0.92;
         col = mix(col, f.look.ink, gc);
     }
 
