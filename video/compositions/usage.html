@@ -1,0 +1,33 @@
+<template>
+  <style>
+    #root { position: absolute; inset: 0; background: var(--ground); overflow: hidden; }
+    /* la prise réelle (960×540) remplit l'image ; la caméra avance doucement vers le panneau */
+    #usage-cam { position: absolute; inset: 0; transform-origin: 30% 32%; }
+    #usage-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .usage-cap { position: absolute; left: 192px; bottom: 140px; padding: 20px 34px; border-radius: 999px;
+      background: rgba(14, 15, 19, 0.72); border: 1.5px solid rgba(255, 255, 255, 0.16);
+      color: var(--ink); font-size: 46px; font-weight: 600; letter-spacing: -0.015em; }
+  </style>
+  <div id="root" data-composition-id="usage" data-width="1920" data-height="1080">
+    <div id="usage-cam">
+      <video id="usage-video" class="clip" data-start="0" data-duration="7.0" muted src="assets/usage.mp4"></video>
+    </div>
+    <div id="usage-cap1" class="usage-cap clip" data-start="0.2" data-duration="1.7" data-var-text="cap1">Survole le carré</div>
+    <div id="usage-cap2" class="usage-cap clip" data-start="1.9" data-duration="1.8" data-var-text="cap2">Choisis ton appli</div>
+    <div id="usage-cap3" class="usage-cap clip" data-start="3.7" data-duration="1.7" data-var-text="cap3">Range-les comme tu veux</div>
+    <div id="usage-cap4" class="usage-cap clip" data-start="5.4" data-duration="1.6" data-var-text="cap4">Il se fait discret</div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#usage-cam", { scale: 1.0 }, { scale: 1.22, duration: 5.6, ease: "power1.inOut" }, 0);
+    tl.to("#usage-cam", { scale: 1.06, duration: 1.2, ease: "power2.inOut" }, 5.6);
+    ["#usage-cap1", "#usage-cap2", "#usage-cap3", "#usage-cap4"].forEach((id, i) => {
+      const s = [0.2, 1.9, 3.7, 5.4][i], d = [1.7, 1.8, 1.7, 1.6][i];
+      tl.fromTo(id, { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }, s);
+      tl.to(id, { opacity: 0, y: -12, duration: 0.25, ease: "power2.in" }, s + d - 0.3);
+    });
+    // fondu d'entrée depuis le zoom de l'intro
+    tl.fromTo("#root", { opacity: 0 }, { opacity: 1, duration: 0.3, ease: "power1.out" }, 0);
+    window.__timelines["usage"] = tl;
+  </script>
+</template>

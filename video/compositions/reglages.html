@@ -1,0 +1,29 @@
+<template>
+  <style>
+    #root { position: absolute; inset: 0; background: radial-gradient(1100px 800px at 72% 50%, #1d1e25 0%, var(--ground) 70%); overflow: hidden; }
+    #reg-text { position: absolute; left: 192px; top: 50%; width: 820px; transform: translateY(-50%); }
+    #reg-title { color: var(--ink); font-size: 84px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.05; }
+    #reg-sub { margin-top: 28px; color: var(--muted); font-size: 42px; font-weight: 400; line-height: 1.3; }
+    /* le panneau réel des réglages (340×512), montré à 1,9×, coins arrondis comme dans l'app */
+    #reg-shot { position: absolute; right: 230px; top: 50%; width: 646px; height: 973px; margin-top: -486px; border-radius: 53px; overflow: hidden; }
+    #reg-video { width: 100%; height: 100%; object-fit: contain; }
+  </style>
+  <div id="root" data-composition-id="reglages" data-width="1920" data-height="1080">
+    <div id="reg-text">
+      <h2 id="reg-title" class="clip" data-start="0" data-duration="3.5" data-var-text="title">Liquid Glass, Sombre ou Clair.</h2>
+      <p id="reg-sub" class="clip" data-start="0" data-duration="3.5" data-var-text="sub">Taille, colonnes, noms, opacité : à ton goût.</p>
+    </div>
+    <div id="reg-shot">
+      <video id="reg-video" class="clip" data-start="0" data-duration="3.5" data-media-start="0.6" muted src="assets/reglages-panneau.mp4"></video>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // la scène pousse la précédente : entrée par la droite
+    tl.fromTo("#root", { xPercent: 100 }, { xPercent: 0, duration: 0.5, ease: "power3.out" }, 0);
+    tl.fromTo("#reg-title", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }, 0.35);
+    tl.fromTo("#reg-sub", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }, 0.55);
+    tl.to("#root", { opacity: 0, duration: 0.3, ease: "power1.in" }, 3.2);
+    window.__timelines["reglages"] = tl;
+  </script>
+</template>

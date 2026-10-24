@@ -1,41 +1,95 @@
+<div align="center">
+
+<img src="assets/desktouch-512.png" width="112" alt="Logo DESKTOUCH">
+
 # DESKTOUCH
 
-<img src="assets/desktouch-512.png" width="96" alt="Logo DESKTOUCH">
+**Tes raccourcis, posés sur ton bureau.**
 
-Un petit carré de verre sur le bureau Windows, façon AssistiveTouch : au survol, un panneau de raccourcis en sort comme une goutte. Rust natif, verre liquide calculé maison (réfraction, dispersion, liseré lumineux), animations à ressort cadencées sur l'écran, 0 % de CPU au repos.
+Un petit carré de verre sur le bureau Windows, façon AssistiveTouch : au survol, un panneau de raccourcis en sort comme une goutte.
 
-## Lancer
+![Windows 10/11](https://img.shields.io/badge/Windows-10%20%2F%2011-2b2d31?style=flat-square)
+![Rust natif](https://img.shields.io/badge/Rust-natif-2b2d31?style=flat-square)
+![0 % CPU au repos](https://img.shields.io/badge/CPU%20au%20repos-0%20%25-2b2d31?style=flat-square)
+![≈ 30 Mo de RAM](https://img.shields.io/badge/RAM-%E2%89%88%2030%20Mo-2b2d31?style=flat-square)
+
+<img src="docs/media/desktouch.gif" width="640" alt="DESKTOUCH en usage : survol, choix d'une appli, réorganisation">
+
+▶ [Vidéo de présentation (16 s)](docs/media/desktouch.mp4)
+
+</div>
+
+---
+
+## Ce qu'il fait
+
+<table>
+<tr>
+<td width="50%"><img src="docs/media/bureau.png" alt="Le carré sur le bureau"></td>
+<td width="50%"><img src="docs/media/panneau.png" alt="Le panneau ouvert"></td>
+</tr>
+<tr>
+<td><b>Discret.</b> Un carré de verre, à l'opacité de ton choix, posé sur le fond d'écran comme une icône : sous toutes les fenêtres, toujours là avec Win + D.</td>
+<td><b>Au survol, il s'ouvre.</b> Le panneau sort du carré comme une goutte, avec les vrais logos de tes applis et jeux. Un clic les lance.</td>
+</tr>
+<tr>
+<td><img src="docs/media/reorganiser.png" alt="Réorganiser les tuiles"></td>
+<td><img src="docs/media/themes.png" alt="Les trois thèmes des réglages"></td>
+</tr>
+<tr>
+<td><b>À ta façon.</b> Glisse une tuile pour changer l'ordre ; déplace le carré où tu veux, même sur un autre écran.</td>
+<td><b>Trois thèmes.</b> Liquid Glass, Sombre ou Clair, plus la taille des icônes, les colonnes, les noms et l'opacité.</td>
+</tr>
+</table>
+
+## Installer
 
 ```bash
 cargo build --release
 target/release/desktouch.exe
 ```
 
-## Utilisation
+Il faut Rust (cible `x86_64-pc-windows-gnu`, MinGW pour `windres` qui intègre l'icône). Au premier lancement, DESKTOUCH s'inscrit au démarrage de Windows (désactivable dans les réglages) et crée quelques raccourcis d'exemple.
 
-- Le carré vit **sur le bureau**, comme une icône : toujours là sur le fond d'écran, sous toutes les fenêtres, et Win + D ne le cache pas.
-- Survol : le panneau s'ouvre ; clic sur une tuile : lance l'application. Le carré reste en place.
-- Appuyer sur le carré et bouger : le déplacer où tu veux, même sur un autre écran (position gardée ; « Réinitialiser » dans les Réglages ou « Remettre le logo à sa place » dans le menu le ramène en haut à gauche). Clic simple : ouvrir / fermer.
-- Glisser une tuile sur une autre : changer l'ordre (gardé dans `ordre.txt`).
-- **Ajouter** (dernière tuile, ou menu) : choisis une application, un raccourci ou un jeu dans la fenêtre « Ouvrir ».
-- Clic droit sur une tuile : la retirer. Clic droit ailleurs : menu.
+## Utiliser
 
-## Icône dans la zone de notification
+| Geste | Effet |
+| --- | --- |
+| Survol du carré | le panneau s'ouvre (ou au clic, selon le réglage) |
+| Clic sur une tuile | lance l'appli |
+| Glisser une tuile | change l'ordre |
+| Appuyer sur le carré et bouger | le déplace (position gardée) |
+| **Ajouter** (dernière tuile) | choisis une appli, un raccourci ou un jeu dans la fenêtre « Ouvrir » |
+| Clic droit sur une tuile | la retirer |
+| Clic droit ailleurs | menu |
 
-Dans les icônes cachées de la barre des tâches :
+### Réglages
 
-- clic : **Réglages** — thème (Liquid Glass, Sombre, Clair), taille des icônes, colonnes (3 à 6), ouverture au survol ou au clic, opacité du carré sur le bureau, noms affichés ou non (sur deux lignes, jamais coupés), lancement au démarrage, réinitialiser la position du logo ;
-- clic droit : Réglages, Ajouter un raccourci, Ouvrir le dossier des raccourcis, Quitter.
+Clic sur l'icône DESKTOUCH dans les **icônes cachées** de la barre des tâches (clic droit : menu).
+
+- **Thème** : Liquid Glass, Sombre, Clair
+- **Taille des icônes** : petite, moyenne, grande
+- **Colonnes** : 3 à 6
+- **Ouverture du panneau** : au survol ou au clic
+- **Opacité du logo** sur le bureau
+- **Afficher les noms** (sur deux lignes, jamais coupés)
+- **Lancer au démarrage**
+- **Position du logo** : réinitialiser
+
+## Sous le capot
+
+- **Rust natif**, une seule dépendance (`windows-sys`) ; un exe d'environ 350 Ko.
+- **Verre liquide calculé maison** : le fond est capturé puis flouté, une lentille réfracte les bords, les couleurs se décomposent légèrement dans les coins, un liseré lumineux suit la forme. Le carré et le panneau fusionnent comme deux gouttes avant de se séparer.
+- **Animations à ressort** cadencées sur la fréquence de l'écran ; **rien ne tourne au repos**.
+- **Net en haute définition** : rendu à la résolution native, logos en 256 px.
 
 ## Fichiers à côté de l'exe
 
-- `Raccourcis/` : les raccourcis du panneau (`.lnk`, `.url`), triés par ordre alphabétique.
-- `reglages.txt`, `position.txt`, `ordre.txt` : réglages, position du carré, ordre des tuiles.
+- `Raccourcis/` : les raccourcis du panneau (`.lnk`, `.url`)
+- `reglages.txt`, `position.txt`, `ordre.txt` : réglages, position du carré, ordre des tuiles
 
 ## Crédits
 
-Recette du verre adaptée d'[AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Kyant, Apache-2.0).
-
-## Logo
-
-`assets/desktouch.svg` (source), `assets/desktouch.ico` (16 à 256 px, intégré à l'exe par `build.rs` via `windres`). Pistes explorées : `docs/logo/`.
+- Recette du verre adaptée d'[AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Kyant, Apache-2.0).
+- Logo : `assets/desktouch.svg` (source), `assets/desktouch.ico` (16 à 256 px) ; pistes explorées dans `docs/logo/`.
+- Vidéo : faite avec [HyperFrames](https://hyperframes.heygen.com) (`video/`), à partir de vraies prises de l'app ; sons d'interface Pixabay (`video/assets/sfx/CREDITS.md`).

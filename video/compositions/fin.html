@@ -1,0 +1,30 @@
+<template>
+  <style>
+    #root { position: absolute; inset: 0; background: radial-gradient(1200px 700px at 50% 50%, #1b1c22 0%, var(--ground) 70%); }
+    #fin-lockup { position: absolute; left: 50%; top: 42%; display: flex; align-items: center; gap: 34px; transform: translate(-50%, -50%); }
+    #fin-logo { width: 140px; height: 140px; }
+    #fin-word { overflow: hidden; }
+    #fin-name { color: var(--ink); font-size: 96px; font-weight: 700; letter-spacing: -0.035em; line-height: 1; }
+    #fin-claim { position: absolute; left: 0; right: 0; top: 58%; text-align: center; color: var(--muted); font-size: 40px; }
+    #fin-url { position: absolute; left: 0; right: 0; top: 68%; text-align: center; color: var(--ink); font-size: 38px; font-weight: 600; }
+  </style>
+  <div id="root" data-composition-id="fin" data-width="1920" data-height="1080">
+    <div id="fin-lockup">
+      <img id="fin-logo" class="clip" data-start="0" data-duration="3.2" src="assets/desktouch.svg" alt="" />
+      <div id="fin-word" class="clip" data-start="0" data-duration="3.2"><div id="fin-name">DESKTOUCH</div></div>
+    </div>
+    <p id="fin-claim" class="clip" data-start="0" data-duration="3.2" data-var-text="claim">Rust natif · 0 % de CPU au repos</p>
+    <p id="fin-url" class="clip" data-start="0" data-duration="3.2" data-var-text="url">github.com/DanyalRez/DESK-TOUCH</p>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#root", { opacity: 0 }, { opacity: 1, duration: 0.3, ease: "power1.out" }, 0);
+    tl.fromTo("#fin-logo", { scale: 0.6, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.55, ease: "back.out(1.7)" }, 0.1);
+    tl.fromTo("#fin-logo", { x: 302 }, { x: 0, duration: 0.55, ease: "power4.out", immediateRender: false }, 0.35);
+    tl.set("#fin-logo", { x: 302 }, 0);
+    tl.fromTo("#fin-name", { xPercent: -104 }, { xPercent: 0, duration: 0.55, ease: "power4.out" }, 0.35);
+    tl.fromTo("#fin-claim", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.7);
+    tl.fromTo("#fin-url", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.85);
+    window.__timelines["fin"] = tl;
+  </script>
+</template>
