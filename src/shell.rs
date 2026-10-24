@@ -68,16 +68,20 @@ pub fn folder() -> PathBuf {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Config {
-    pub theme: usize,  // 0 Liquid Glass, 1 Sombre, 2 Clair
-    pub opacity: f32,  // opacité du carré au repos
-    pub startup: bool, // lancement avec Windows
+    pub theme: usize,     // 0 Liquid Glass, 1 Sombre, 2 Clair
+    pub opacity: f32,     // opacité du carré au repos
+    pub startup: bool,    // lancement avec Windows
+    pub icon_size: usize, // 0 petite, 1 moyenne, 2 grande
+    pub cols: usize,      // colonnes du panneau, 3 à 6
+    pub names: bool,      // noms sous les logos
+    pub click_open: bool, // ouvrir au clic plutôt qu'au survol
 }
 
 pub const THEMES: [&str; 3] = ["Liquid Glass", "Sombre", "Clair"];
 
 impl Default for Config {
     fn default() -> Self {
-        Config { theme: 0, opacity: 0.55, startup: true }
+        Config { theme: 0, opacity: 0.55, startup: true, icon_size: 1, cols: 4, names: true, click_open: false }
     }
 }
 
@@ -89,6 +93,10 @@ pub fn parse_config(s: &str) -> Config {
             ("theme", v) => c.theme = v.parse().unwrap_or(0).min(THEMES.len() - 1),
             ("opacite", v) => c.opacity = v.parse::<f32>().map_or(c.opacity, |p| (p / 100.0).clamp(0.15, 1.0)),
             ("demarrage", v) => c.startup = v != "0",
+            ("taille", v) => c.icon_size = v.parse().unwrap_or(1).min(2),
+            ("colonnes", v) => c.cols = v.parse().unwrap_or(4).clamp(3, 6),
+            ("noms", v) => c.names = v != "0",
+            ("ouverture", v) => c.click_open = v == "clic",
             _ => {}
         }
     }
@@ -100,7 +108,9 @@ pub fn load_config() -> Config {
 }
 
 pub fn save_config(c: &Config) {
-    let s = format!("theme={}\nopacite={}\ndemarrage={}\n", c.theme, (c.opacity * 100.0).round(), c.startup as u8);
+    let s = format!("theme={}\nopacite={}\ndemarrage={}\ntaille={}\ncolonnes={}\nnoms={}\nouverture={}\n",
+        c.theme, (c.opacity * 100.0).round(), c.startup as u8, c.icon_size, c.cols, c.names as u8,
+        if c.click_open { "clic" } else { "survol" });
     let _ = std::fs::write(beside_exe("reglages.txt"), s);
 }
 
@@ -368,7 +378,7 @@ pub unsafe fn text_layer(pw: usize, ph: usize, texts: &[Text], ink: Rgb) -> Laye
         SetTextColor(dc, g | g << 8 | g << 16);
         let txt: Vec<u16> = t.s.encode_utf16().collect();
         let mut r = t.r;
-        DrawTextW(dc, txt.as_ptr(), txt.len() as i32, &mut r, t.flags | DT_SINGLELINE | DT_NOPREFIX);
+        DrawTextW(dc, txt.as_ptr(), txt.len() as i32, &mut r, t.flags | DT_NOPREFIX | if t.flags & DT_WORDBREAK == 0 { DT_SINGLELINE } else { 0 });
         SelectObject(dc, of);
         DeleteObject(font);
     }
@@ -390,19 +400,24 @@ pub struct Cell {
     pub h: i32,
 }
 
-/// Calque d'une tuile (logo + libellé) ; `None` : la tuile « Ajouter ». Une tuile = un calque, pour
-/// pouvoir les faire glisser une par une.
-pub unsafe fn tile_layer(item: Option<&Item>, cw: usize, ch: usize, icon: usize, s: f32, ink: Rgb) -> Layer {
-    let icon_top = (10.0 * s) as i32;
+/// Calque d'une tuile (logo + nom) ; `None` : la tuile « Ajouter ». Une tuile = un calque, pour
+/// pouvoir les faire glisser une par une. Le nom tient sur deux lignes plutôt que d'être coupé.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn tile_layer(item: Option<&Item>, cw: usize, ch: usize, icon: usize, icon_top: i32, names: bool, s: f32, ink: Rgb) -> Layer {
     let ix = (cw - icon) as i32 / 2;
-    let mut texts = vec![Text {
-        s: item.map_or("Ajouter", |it| it.name.as_str()),
-        r: RECT { left: (5.0 * s) as i32, right: cw as i32 - (5.0 * s) as i32, top: icon_top + icon as i32 + (6.0 * s) as i32, bottom: ch as i32 },
-        size: 12.5 * s, weight: 500, flags: DT_CENTER | DT_TOP | DT_END_ELLIPSIS, level: 1.0, glyph: false,
-    }];
+    let mut texts = Vec::new();
+    if names {
+        texts.push(Text {
+            s: item.map_or("Ajouter", |it| it.name.as_str()),
+            r: RECT { left: (4.0 * s) as i32, right: cw as i32 - (4.0 * s) as i32,
+                top: icon_top + icon as i32 + (4.0 * s) as i32, bottom: ch as i32 - (1.0 * s) as i32 },
+            size: 11.5 * s, weight: 500, flags: DT_CENTER | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS,
+            level: 1.0, glyph: false,
+        });
+    }
     if item.is_none() {
         texts.push(Text { s: "\u{E710}", r: RECT { left: ix, right: ix + icon as i32, top: icon_top, bottom: icon_top + icon as i32 },
-            size: 26.0 * s, weight: 400, flags: DT_CENTER | DT_VCENTER, level: 1.0, glyph: true });
+            size: icon as f32 * 0.55, weight: 400, flags: DT_CENTER | DT_VCENTER, level: 1.0, glyph: true });
     }
     let mut layer = text_layer(cw, ch, &texts, ink);
     if let Some((ss, raw)) = item.and_then(|it| it.icon.as_ref()) {
@@ -563,6 +578,22 @@ mod tests {
         assert_eq!(c.theme, 2);
         assert!((c.opacity - 0.15).abs() < 1e-6);
         assert_eq!(parse_config("opacite=abc").opacity, Config::default().opacity);
+        let c = parse_config("taille=2
+colonnes=9
+noms=0
+ouverture=clic");
+        assert_eq!((c.icon_size, c.cols, c.names, c.click_open), (2, 6, false, true));
+        // aller-retour par le fichier
+        let c = Config { theme: 1, opacity: 0.4, startup: false, icon_size: 0, cols: 5, names: false, click_open: true };
+        let s = format!("theme=1
+opacite=40
+demarrage=0
+taille=0
+colonnes=5
+noms=0
+ouverture=clic
+");
+        assert_eq!(parse_config(&s), c);
     }
 
     #[test]

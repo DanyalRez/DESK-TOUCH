@@ -42,13 +42,46 @@ const SQ_R: f32 = 15.0;
 const PANEL_R: f32 = 28.0;
 const GAP: f32 = 8.0; // entre le carré et le panneau ouvert
 const PAD: f32 = 12.0;
-const CELL_W: f32 = 88.0;
-const CELL_H: f32 = 92.0;
-const ICON: f32 = 46.0;
+const ICON_SIZES: [f32; 3] = [36.0, 46.0, 58.0];
 const MARGIN: f32 = 30.0; // place pour l'ombre et le rebond du ressort
-const MAX_COLS: usize = 4;
 const PREFS_W: f32 = 340.0;
-const PREFS_H: f32 = 246.0;
+const PREFS_TOP: f32 = 54.0; // sous le titre « Réglages »
+
+/// Contrôle d'une ligne des réglages.
+enum Ctl {
+    Seg(&'static [&'static str]),
+    Slider,
+    Toggle,
+}
+
+const ROWS: [(&str, Ctl); 7] = [
+    ("Thème", Ctl::Seg(&shell::THEMES)),
+    ("Taille des icônes", Ctl::Seg(&["Petite", "Moyenne", "Grande"])),
+    ("Colonnes", Ctl::Seg(&["3", "4", "5", "6"])),
+    ("Ouverture du panneau", Ctl::Seg(&["Au survol", "Au clic"])),
+    ("Opacité du logo", Ctl::Slider),
+    ("Afficher les noms", Ctl::Toggle),
+    ("Lancer au démarrage", Ctl::Toggle),
+];
+
+fn row_height(c: &Ctl) -> f32 {
+    match c {
+        Ctl::Seg(_) => 66.0,
+        Ctl::Slider => 58.0,
+        Ctl::Toggle => 42.0,
+    }
+}
+
+/// Haut de chaque ligne (pixels logiques, relatif au panneau) et hauteur totale.
+fn row_tops() -> ([f32; ROWS.len()], f32) {
+    let mut tops = [0.0; ROWS.len()];
+    let mut y = PREFS_TOP;
+    for (t, (_, c)) in tops.iter_mut().zip(&ROWS) {
+        *t = y;
+        y += row_height(c);
+    }
+    (tops, y + 10.0)
+}
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -182,9 +215,7 @@ struct App {
     prefs: Surface,
     prefs_shown: bool,
     p_open: Spring,
-    p_seg: Spring,
-    p_knob: Spring,
-    p_tog: Spring,
+    p_rows: Vec<Spring>, // une par ligne : case choisie, curseur ou interrupteur
     dragging: bool,
     // boucle
     dirty_main: bool,
@@ -207,11 +238,21 @@ impl App {
         self.items.len() + 1 // + « Ajouter »
     }
     fn cols(&self) -> usize {
-        self.tiles().clamp(1, MAX_COLS)
+        self.tiles().clamp(1, self.cfg.cols)
+    }
+    /// Taille du logo, en pixels logiques.
+    fn icon(&self) -> f32 {
+        ICON_SIZES[self.cfg.icon_size]
+    }
+    /// Case d'une tuile : plus haute avec les noms (deux lignes), carrée sans.
+    fn cell(&self) -> (f32, f32) {
+        let i = self.icon();
+        if self.cfg.names { (i + 40.0, i + 52.0) } else { (i + 22.0, i + 22.0) }
     }
     fn panel_size(&self) -> (f32, f32) {
-        let rows = self.tiles().div_ceil(MAX_COLS);
-        (self.px(PAD * 2.0 + CELL_W * self.cols() as f32).round(), self.px(PAD * 2.0 + CELL_H * rows as f32).round())
+        let rows = self.tiles().div_ceil(self.cfg.cols);
+        let (cw, ch) = self.cell();
+        (self.px(PAD * 2.0 + cw * self.cols() as f32).round(), self.px(PAD * 2.0 + ch * rows as f32).round())
     }
 
     fn square(&self) -> Rr {
@@ -237,11 +278,12 @@ impl App {
 
     fn cells(&self) -> Vec<Cell> {
         let cols = self.cols();
+        let (cw, ch) = self.cell();
         (0..self.tiles()).map(|i| Cell {
-            x: self.px(PAD + (i % cols) as f32 * CELL_W).round() as i32,
-            y: self.px(PAD + (i / cols) as f32 * CELL_H).round() as i32,
-            w: self.px(CELL_W).round() as i32,
-            h: self.px(CELL_H).round() as i32,
+            x: self.px(PAD + (i % cols) as f32 * cw).round() as i32,
+            y: self.px(PAD + (i / cols) as f32 * ch).round() as i32,
+            w: self.px(cw).round() as i32,
+            h: self.px(ch).round() as i32,
         }).collect()
     }
 
@@ -275,8 +317,11 @@ impl App {
     unsafe fn rebuild_main_layer(&mut self) {
         let cells = self.cells();
         let ink = self.look(&self.main).ink;
-        let (cw, ch, icon) = (cells[0].w as usize, cells[0].h as usize, self.px(ICON).round() as usize);
-        self.tiles = (0..cells.len()).map(|i| shell::tile_layer(self.items.get(i), cw, ch, icon, self.scale, ink)).collect();
+        let (cw, ch, icon) = (cells[0].w as usize, cells[0].h as usize, self.px(self.icon()).round() as usize);
+        // sans les noms, le logo est centré dans sa case
+        let top = if self.cfg.names { self.px(8.0) as i32 } else { (ch - icon) as i32 / 2 };
+        let (names, s) = (self.cfg.names, self.scale);
+        self.tiles = (0..cells.len()).map(|i| shell::tile_layer(self.items.get(i), cw, ch, icon, top, names, s, ink)).collect();
         self.tx = cells.iter().map(|c| Spring::new(c.x as f32, 380.0, 0.8)).collect();
         self.ty = cells.iter().map(|c| Spring::new(c.y as f32, 380.0, 0.8)).collect();
         self.dirty_main = true;
@@ -325,8 +370,8 @@ impl App {
         let inset = self.px(4.0 + 3.0 * self.press.x);
         let blob = self.blob.x.clamp(0.0, 1.0) * content;
         let pills = [Pill {
-            rr: Rr { x: self.bx.x + inset, y: self.by.x + inset, w: self.px(CELL_W) - 2.0 * inset,
-                h: self.px(CELL_H) - 2.0 * inset, r: self.px(20.0) },
+            rr: Rr { x: self.bx.x + inset, y: self.by.x + inset, w: self.px(self.cell().0) - 2.0 * inset,
+                h: self.px(self.cell().1) - 2.0 * inset, r: self.px(self.cell().0.min(self.cell().1) * 0.24) },
             color: accent(&look), amount: 0.15 * blob, rim: 0.55 * blob,
         }];
         let slide = (1.0 - content) * self.px(8.0);
@@ -384,7 +429,7 @@ impl App {
     fn set_hover(&mut self, mx: f32, my: f32) {
         let p = self.panel();
         let hv = if self.open.x > 0.85 && self.open.target == 1.0 {
-            hit(mx - p.x - self.px(PAD), my - p.y - self.px(PAD), self.cols(), self.tiles(), self.px(CELL_W), self.px(CELL_H))
+            hit(mx - p.x - self.px(PAD), my - p.y - self.px(PAD), self.cols(), self.tiles(), self.px(self.cell().0), self.px(self.cell().1))
         } else {
             -1
         };
@@ -417,7 +462,21 @@ impl App {
 
     fn prefs_panel(&self) -> Rr {
         let m = self.px(MARGIN);
-        Rr { x: m, y: m, w: self.px(PREFS_W), h: self.px(PREFS_H), r: self.px(PANEL_R) }
+        Rr { x: m, y: m, w: self.px(PREFS_W), h: self.px(row_tops().1), r: self.px(PANEL_R) }
+    }
+
+    /// Valeur affichée par la ligne `i` : position du curseur, case choisie ou interrupteur (0 / 1).
+    fn row_value(&self, i: usize) -> f32 {
+        let c = &self.cfg;
+        match i {
+            0 => c.theme as f32,
+            1 => c.icon_size as f32,
+            2 => (c.cols - 3) as f32,
+            3 => c.click_open as u8 as f32,
+            4 => (c.opacity - 0.15) / 0.85,
+            5 => c.names as u8 as f32,
+            _ => c.startup as u8 as f32,
+        }
     }
 
     unsafe fn show_prefs(&mut self) {
@@ -436,9 +495,10 @@ impl App {
         let (left, top) = (mi.rcWork.right - ww + p.x as i32 - self.px(12.0) as i32, mi.rcWork.bottom - wh + p.y as i32 - self.px(12.0) as i32);
         self.prefs.place(RECT { left, top, right: left + ww, bottom: top + wh });
         self.prefs.capture(self.px(10.0).round() as usize, p);
-        self.p_seg.snap(self.cfg.theme as f32);
-        self.p_knob.snap((self.cfg.opacity - 0.15) / 0.85);
-        self.p_tog.snap(self.cfg.startup as u8 as f32);
+        for i in 0..ROWS.len() {
+            let v = self.row_value(i);
+            self.p_rows[i].snap(v);
+        }
         self.p_open.snap(0.0);
         self.rebuild_prefs_layer();
         self.draw_prefs();
@@ -462,18 +522,35 @@ impl App {
         let r = |x: f32, y: f32, w: f32, h: f32| RECT {
             left: (x * s) as i32, top: (y * s) as i32, right: ((x + w) * s) as i32, bottom: ((y + h) * s) as i32,
         };
+        let label = |t: &'static str, rect: RECT, level: f32, flags| Text { s: t, r: rect, size: 12.5 * s, weight: 500, flags, level, glyph: false };
         let pct = format!("{} %", (self.cfg.opacity * 100.0).round());
-        let mut texts = vec![
-            Text { s: "Réglages", r: r(22.0, 16.0, 296.0, 26.0), size: 17.0 * s, weight: 600, flags: DT_LEFT | DT_VCENTER, level: 1.0, glyph: false },
-            Text { s: "Thème", r: r(22.0, 52.0, 200.0, 20.0), size: 12.5 * s, weight: 500, flags: DT_LEFT | DT_VCENTER, level: 0.62, glyph: false },
-            Text { s: "Opacité du logo", r: r(22.0, 130.0, 200.0, 20.0), size: 12.5 * s, weight: 500, flags: DT_LEFT | DT_VCENTER, level: 0.62, glyph: false },
-            Text { s: &pct, r: r(220.0, 130.0, 100.0, 20.0), size: 12.5 * s, weight: 600, flags: DT_RIGHT | DT_VCENTER, level: 0.9, glyph: false },
-            Text { s: "Lancer au démarrage", r: r(22.0, 198.0, 230.0, 28.0), size: 13.5 * s, weight: 500, flags: DT_LEFT | DT_VCENTER, level: 1.0, glyph: false },
-        ];
-        for (i, name) in shell::THEMES.iter().enumerate() {
-            texts.push(Text { s: name, r: r(20.0 + i as f32 * 100.0, 78.0, 100.0, 38.0), size: 12.5 * s, weight: 600,
-                flags: DT_CENTER | DT_VCENTER, level: 1.0, glyph: false });
+        let (tops, _) = row_tops();
+        let mut texts = vec![Text { s: "Réglages", r: r(22.0, 16.0, 296.0, 26.0), size: 17.0 * s, weight: 600,
+            flags: DT_LEFT | DT_VCENTER, level: 1.0, glyph: false }];
+        for (i, (name, ctl)) in ROWS.iter().enumerate() {
+            let y = tops[i];
+            match ctl {
+                Ctl::Seg(opts) => {
+                    texts.push(label(name, r(22.0, y, 296.0, 18.0), 0.62, DT_LEFT | DT_VCENTER));
+                    let w = 300.0 / opts.len() as f32;
+                    for (k, o) in opts.iter().enumerate() {
+                        let mut t = label(o, r(20.0 + k as f32 * w, y + 22.0, w, 34.0), 1.0, DT_CENTER | DT_VCENTER);
+                        t.weight = 600;
+                        texts.push(t);
+                    }
+                }
+                Ctl::Slider => texts.push(label(name, r(22.0, y, 200.0, 18.0), 0.62, DT_LEFT | DT_VCENTER)),
+                Ctl::Toggle => {
+                    let mut t = label(name, r(22.0, y, 230.0, 40.0), 1.0, DT_LEFT | DT_VCENTER);
+                    t.size = 13.5 * s;
+                    texts.push(t);
+                }
+            }
         }
+        let mut value = label("", r(220.0, tops[4], 100.0, 18.0), 0.9, DT_RIGHT | DT_VCENTER);
+        value.s = &pct;
+        value.weight = 600;
+        texts.push(value);
         let ink = self.look(&self.prefs).ink;
         self.prefs.layer = shell::text_layer(p.w as usize, p.h as usize, &texts, ink);
         self.dirty_prefs = true;
@@ -490,17 +567,29 @@ impl App {
         let ac = accent(&look);
         let s = self.scale;
         let at = |x: f32, y: f32, w: f32, h: f32, r: f32| Rr { x: p.x + x * s, y: p.y + y * s, w: w * s, h: h * s, r: r * s };
-        let knob_x = 20.0 + self.p_knob.x.clamp(0.0, 1.0) * (300.0 - 22.0);
-        let tog = self.p_tog.x;
-        let pills = [
-            Pill { rr: at(20.0, 78.0, 300.0, 38.0, 19.0), color: ac, amount: 0.08 * content, rim: 0.0 },
-            Pill { rr: at(23.0 + self.p_seg.x * 98.0, 81.0, 98.0, 32.0, 16.0), color: ac, amount: 0.2 * content, rim: 0.7 * content },
-            Pill { rr: at(20.0, 164.0, 300.0, 6.0, 3.0), color: ac, amount: 0.16 * content, rim: 0.0 },
-            Pill { rr: at(20.0, 164.0, knob_x - 20.0 + 11.0, 6.0, 3.0), color: ac, amount: 0.6 * content, rim: 0.0 },
-            Pill { rr: at(knob_x, 156.0, 22.0, 22.0, 11.0), color: [1.0; 3], amount: content, rim: 0.6 * content },
-            Pill { rr: at(272.0, 198.0, 48.0, 28.0, 14.0), color: ac, amount: lerp(0.14, 0.6, tog) * content, rim: 0.3 * content },
-            Pill { rr: at(275.0 + tog * 20.0, 201.0, 22.0, 22.0, 11.0), color: [1.0; 3], amount: content, rim: 0.6 * content },
-        ];
+        let pill = |rr: Rr, color: Rgb, amount: f32, rim: f32| Pill { rr, color, amount: amount * content, rim: rim * content };
+        let (tops, _) = row_tops();
+        let mut pills = Vec::new();
+        for (i, (_, ctl)) in ROWS.iter().enumerate() {
+            let (y, v) = (tops[i], self.p_rows[i].x);
+            match ctl {
+                Ctl::Seg(opts) => {
+                    let w = 300.0 / opts.len() as f32;
+                    pills.push(pill(at(20.0, y + 22.0, 300.0, 34.0, 17.0), ac, 0.08, 0.0));
+                    pills.push(pill(at(23.0 + v * w, y + 25.0, w - 6.0, 28.0, 14.0), ac, 0.2, 0.7));
+                }
+                Ctl::Slider => {
+                    let knob = 20.0 + v.clamp(0.0, 1.0) * (300.0 - 22.0);
+                    pills.push(pill(at(20.0, y + 30.0, 300.0, 6.0, 3.0), ac, 0.16, 0.0));
+                    pills.push(pill(at(20.0, y + 30.0, knob - 20.0 + 11.0, 6.0, 3.0), ac, 0.6, 0.0));
+                    pills.push(pill(at(knob, y + 22.0, 22.0, 22.0, 11.0), [1.0; 3], 1.0, 0.6));
+                }
+                Ctl::Toggle => {
+                    pills.push(pill(at(272.0, y + 6.0, 48.0, 28.0, 14.0), ac, lerp(0.14, 0.6, v), 0.3));
+                    pills.push(pill(at(275.0 + v * 20.0, y + 9.0, 22.0, 22.0, 11.0), [1.0; 3], 1.0, 0.6));
+                }
+            }
+        }
         let f = Frame {
             back: &self.prefs.back,
             layers: &[(&self.prefs.layer, (p.x as i32, p.y as i32), content)],
@@ -518,29 +607,53 @@ impl App {
         self.prefs.present(&f);
     }
 
-    unsafe fn set_theme(&mut self, t: usize) {
-        self.cfg.theme = t;
-        self.p_seg.target = t as f32;
+    /// Clic sur la ligne `i` à l'abscisse logique `x` (relative au panneau des réglages).
+    unsafe fn prefs_click(&mut self, i: usize, x: f32) {
+        match ROWS[i].1 {
+            Ctl::Seg(opts) => {
+                let k = (((x - 20.0) / (300.0 / opts.len() as f32)).max(0.0) as usize).min(opts.len() - 1);
+                match i {
+                    0 => self.cfg.theme = k,
+                    1 => self.cfg.icon_size = k,
+                    2 => self.cfg.cols = k + 3,
+                    _ => self.cfg.click_open = k == 1,
+                }
+            }
+            Ctl::Slider => {
+                self.dragging = true;
+                return self.set_opacity_from(x);
+            }
+            Ctl::Toggle if i == 5 => self.cfg.names = !self.cfg.names,
+            Ctl::Toggle => {
+                self.cfg.startup = !self.cfg.startup;
+                shell::set_startup(self.cfg.startup);
+            }
+        }
+        self.p_rows[i].target = self.row_value(i);
         shell::save_config(&self.cfg);
-        self.rebuild_main_layer();
-        self.rebuild_prefs_layer();
+        match i {
+            // thème : nouvelles couleurs de texte partout
+            0 => {
+                self.rebuild_main_layer();
+                self.rebuild_prefs_layer();
+            }
+            // taille, colonnes, noms : le panneau change de forme
+            1 | 2 | 5 => {
+                self.relayout();
+                self.recapture();
+                self.draw_main();
+            }
+            _ => {}
+        }
         self.kick();
     }
 
     unsafe fn set_opacity_from(&mut self, lx: f32) {
         let t = ((lx - 31.0) / 278.0).clamp(0.0, 1.0);
         self.cfg.opacity = 0.15 + t * 0.85;
-        self.p_knob.target = t;
+        self.p_rows[4].target = t;
         self.vis.target = self.vis_target();
         self.rebuild_prefs_layer();
-        self.kick();
-    }
-
-    unsafe fn toggle_startup(&mut self) {
-        self.cfg.startup = !self.cfg.startup;
-        shell::set_startup(self.cfg.startup);
-        shell::save_config(&self.cfg);
-        self.p_tog.target = self.cfg.startup as u8 as f32;
         self.kick();
     }
 
@@ -551,8 +664,8 @@ impl App {
         v.extend(self.tx.iter_mut().chain(self.ty.iter_mut()));
         v
     }
-    fn prefs_springs(&mut self) -> [&mut Spring; 4] {
-        [&mut self.p_open, &mut self.p_seg, &mut self.p_knob, &mut self.p_tog]
+    fn prefs_springs(&mut self) -> Vec<&mut Spring> {
+        std::iter::once(&mut self.p_open).chain(self.p_rows.iter_mut()).collect()
     }
 
     /// Une image d'animation pour chaque fenêtre qui bouge ; faux quand tout est au repos.
@@ -656,7 +769,7 @@ unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
                 let Some(d) = a.drag else { return false };
                 a.cursor = (x, y);
                 let p = a.panel();
-                let j = hit(x - p.x - a.px(PAD), y - p.y - a.px(PAD), a.cols(), a.items.len(), a.px(CELL_W), a.px(CELL_H));
+                let j = hit(x - p.x - a.px(PAD), y - p.y - a.px(PAD), a.cols(), a.items.len(), a.px(a.cell().0), a.px(a.cell().1));
                 if j >= 0 && j as usize != d {
                     a.move_tile(d, j as usize);
                 }
@@ -676,7 +789,7 @@ unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
                 let closed = app(|a| {
                     a.vis.target = a.vis_target();
                     a.kick();
-                    a.open.target < 0.5
+                    a.open.target < 0.5 && !a.cfg.click_open // réglage « au clic » : le survol n'ouvre pas
                 });
                 if closed {
                     SetTimer(h, T_OPEN, 140, None); // court temps d'arrêt : on peut traverser ou attraper le carré
@@ -876,16 +989,21 @@ unsafe extern "system" fn prefs_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     match msg {
         WM_LBUTTONDOWN => {
             let (x, y) = local(lp);
-            if (78.0..116.0).contains(&y) && (20.0..320.0).contains(&x) {
-                app(|a| a.set_theme((((x - 20.0) / 100.0) as usize).min(2)));
-            } else if (148.0..182.0).contains(&y) && (8.0..332.0).contains(&x) {
-                SetCapture(h);
-                app(|a| {
-                    a.dragging = true;
-                    a.set_opacity_from(x);
-                });
-            } else if (190.0..234.0).contains(&y) && (262.0..330.0).contains(&x) {
-                app(|a| a.toggle_startup());
+            // ligne touchée : la zone du contrôle (segments, curseur) ou toute la ligne (interrupteurs)
+            let (tops, _) = row_tops();
+            let row = ROWS.iter().enumerate().position(|(i, (_, c))| {
+                let t = tops[i];
+                match c {
+                    Ctl::Seg(_) => (t + 22.0..t + 56.0).contains(&y) && (20.0..320.0).contains(&x),
+                    Ctl::Slider => (t + 14.0..t + 50.0).contains(&y) && (8.0..332.0).contains(&x),
+                    Ctl::Toggle => (t..t + 40.0).contains(&y),
+                }
+            });
+            if let Some(i) = row {
+                if matches!(ROWS[i].1, Ctl::Slider) {
+                    SetCapture(h);
+                }
+                app(|a| a.prefs_click(i, x));
             }
             0
         }
@@ -967,9 +1085,11 @@ fn main() {
             press_sq: None, press_tile: None, drag: None, grab: (0.0, 0.0), cursor: (0.0, 0.0),
             prefs: Surface::new(ph), prefs_shown: false,
             p_open: Spring::new(0.0, 320.0, 0.82),
-            p_seg: Spring::new(0.0, 420.0, 0.78),
-            p_knob: Spring::new(0.0, 900.0, 1.0),
-            p_tog: Spring::new(0.0, 520.0, 0.75),
+            p_rows: ROWS.iter().map(|(_, c)| match c {
+                Ctl::Seg(_) => Spring::new(0.0, 420.0, 0.78),
+                Ctl::Slider => Spring::new(0.0, 900.0, 1.0),
+                Ctl::Toggle => Spring::new(0.0, 520.0, 0.75),
+            }).collect(),
             dragging: false, dirty_main: false, dirty_prefs: false, animating: false, last: Instant::now(),
         };
         a.relayout();

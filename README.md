@@ -22,7 +22,7 @@ target/release/desktouch.exe
 
 Dans les icônes cachées de la barre des tâches :
 
-- clic : **Réglages** — thème (Liquid Glass, Sombre, Clair), opacité du carré sur le bureau, lancement au démarrage ;
+- clic : **Réglages** — thème (Liquid Glass, Sombre, Clair), taille des icônes, colonnes (3 à 6), ouverture au survol ou au clic, opacité du carré sur le bureau, noms affichés ou non (sur deux lignes, jamais coupés), lancement au démarrage ;
 - clic droit : Réglages, Ajouter un raccourci, Ouvrir le dossier des raccourcis, Quitter.
 
 ## Fichiers à côté de l'exe
