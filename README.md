@@ -1,6 +1,6 @@
 # DESKTOUCH
 
-Un petit carré discret sur le bureau Windows qui s'ouvre en panneau de raccourcis au survol, façon AssistiveTouch. Rust natif, fond acrylique, ~0 % de CPU au repos.
+Un petit carré de verre sur le bureau Windows, façon AssistiveTouch : au survol, un panneau de raccourcis en sort comme une goutte. Rust natif, verre liquide calculé maison (réfraction, dispersion, liseré lumineux), animations à ressort cadencées sur l'écran, 0 % de CPU au repos.
 
 ## Lancer
 
@@ -9,21 +9,26 @@ cargo build --release
 target/release/desktouch.exe
 ```
 
-## Raccourcis
-
-Le panneau affiche les fichiers du dossier `Raccourcis` placé à côté de `desktouch.exe` (créé au premier lancement avec quelques exemples).
-
-- Glisse-y n'importe quel raccourci : `.lnk` du menu Démarrer, `.url` de jeux Steam, un dossier en raccourci…
-- Le logo vient de Windows, le nom du fichier sert de libellé.
-- Tri par ordre alphabétique : préfixe `1 `, `2 `… pour choisir l'ordre.
-- La tuile « Ajouter » ouvre ce dossier. Les changements sont pris en compte à la prochaine ouverture du panneau.
-
 ## Utilisation
 
-- Survol : le panneau s'ouvre ; clic sur une tuile : lance le raccourci.
-- Glisser le carré fermé : le déplacer (position gardée dans `position.txt`, à côté de l'exe ; si l'écran n'est plus branché, retour en haut à gauche).
-- Clic droit : quitter.
+- Le carré n'apparaît que quand le **bureau** est au premier plan (clic sur le fond d'écran, Win + D).
+- Survol : le panneau s'ouvre ; clic sur une tuile : lance l'application. Le carré reste en place.
+- Glisser le carré fermé : le déplacer (position gardée). Clic simple : ouvrir / fermer.
+- **Ajouter** (dernière tuile, ou menu) : choisis une application, un raccourci ou un jeu dans la fenêtre « Ouvrir ».
+- Clic droit sur une tuile : la retirer. Clic droit ailleurs : menu.
 
-## Démarrage avec Windows
+## Icône dans la zone de notification
 
-DESKTOUCH s'inscrit tout seul au démarrage de la session (clé `HKCU\…\Run`, mise à jour à chaque lancement si l'exe a bougé). Pour le désactiver : Gestionnaire des tâches > Applications de démarrage > DESKTOUCH > Désactiver.
+Dans les icônes cachées de la barre des tâches :
+
+- clic : **Réglages** — thème (Liquid Glass, Sombre, Clair), opacité du carré sur le bureau, lancement au démarrage ;
+- clic droit : Réglages, Ajouter un raccourci, Ouvrir le dossier des raccourcis, Quitter.
+
+## Fichiers à côté de l'exe
+
+- `Raccourcis/` : les raccourcis du panneau (`.lnk`, `.url`), triés par ordre alphabétique.
+- `reglages.txt`, `position.txt` : réglages et position du carré.
+
+## Crédits
+
+Recette du verre adaptée d'[AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Kyant, Apache-2.0).
