@@ -1,36 +1,41 @@
 #![windows_subsystem = "windows"]
 //! DESKTOUCH : un petit carré discret sur le bureau qui s'ouvre en panneau de raccourcis au survol.
 //! Zéro CPU au repos : le minuteur d'animation ne tourne que pendant une transition.
+//! Les raccourcis sont les fichiers du dossier « Raccourcis » posé à côté de l'exe (.lnk, .url…).
 
-use std::{cell::RefCell, mem::zeroed, ptr::null};
-use windows_sys::Win32::{
-    Foundation::*,
-    Graphics::{Dwm::*, Gdi::*},
-    System::{LibraryLoader::GetModuleHandleW, SystemInformation::GetTickCount64},
-    UI::{Controls::MARGINS, Input::KeyboardAndMouse::*, Shell::ShellExecuteW, WindowsAndMessaging::*},
+use std::{cell::RefCell, ffi::c_void, mem::zeroed, os::windows::ffi::OsStrExt, path::PathBuf, ptr::null, time::SystemTime};
+use windows_sys::{
+    core::GUID,
+    Win32::{
+        Foundation::*,
+        Graphics::{Dwm::*, Gdi::*},
+        System::{Com::CoInitializeEx, LibraryLoader::GetModuleHandleW, SystemInformation::GetTickCount64},
+        UI::{
+            Controls::{ImageList_GetIcon, HIMAGELIST, ILD_TRANSPARENT, MARGINS},
+            Input::KeyboardAndMouse::*,
+            Shell::{SHGetFileInfoW, SHGetImageList, ShellExecuteW, SHFILEINFOW, SHGFI_SYSICONINDEX, SHIL_EXTRALARGE},
+            WindowsAndMessaging::*,
+        },
+    },
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3; // absent de windows-sys
+const IID_IIMAGELIST: GUID = GUID::from_u128(0x46EB5926_582E_4017_9FDF_E8998DAA0950);
 const X: i32 = 60;
 const Y: i32 = 120;
 const SMALL: f32 = 44.0;
 const TILE: i32 = 92;
 const GAP: i32 = 10;
 const PAD: i32 = 14;
-const COLS: i32 = 3;
-const BIG_W: f32 = (PAD * 2 + TILE * COLS + GAP * (COLS - 1)) as f32;
-const BIG_H: f32 = (PAD * 2 + TILE * 2 + GAP) as f32;
+const MAX_COLS: usize = 4;
+const ICON: i32 = 48;
 const IDLE_ALPHA: f32 = 80.0;
 
-// (glyphe Segoe Fluent Icons, libellé, cible ShellExecute)
-const ITEMS: [(u16, &str, &str); 6] = [
-    (0xE8B7, "Fichiers", "explorer.exe"),
-    (0xE774, "Web", "https://www.google.com"),
-    (0xE7FC, "Jeux", "steam://open/main"),
-    (0xE756, "Terminal", "wt.exe"),
-    (0xE8EF, "Calculatrice", "calc.exe"),
-    (0xE713, "Réglages", "ms-settings:"),
-];
+struct Item {
+    name: Vec<u16>,
+    path: Vec<u16>, // terminé par 0, prêt pour ShellExecute
+    icon: HBITMAP,  // 48×48 BGRA prémultiplié, ou null
+}
 
 struct State {
     t: f32,
@@ -40,17 +45,15 @@ struct State {
     tracking: bool,
     icon_font: HFONT,
     text_font: HFONT,
+    items: Vec<Item>,
+    loaded: Option<SystemTime>,
 }
 
 thread_local! {
     static ST: RefCell<State> = const { RefCell::new(State {
         t: 0.0, target: 0.0, last: 0, hover: -1, tracking: false,
-        icon_font: null_font(), text_font: null_font(),
+        icon_font: 0 as HFONT, text_font: 0 as HFONT, items: Vec::new(), loaded: None,
     }) };
-}
-
-const fn null_font() -> HFONT {
-    0 as HFONT
 }
 
 fn w(s: &str) -> Vec<u16> {
@@ -62,23 +65,133 @@ fn rgb(v: f32) -> u32 {
     c | c << 8 | c << 16
 }
 
+fn null_hwnd() -> HWND {
+    std::ptr::null_mut()
+}
+
+fn folder() -> PathBuf {
+    let exe = std::env::current_exe().unwrap_or_default();
+    exe.parent().map(|p| p.join("Raccourcis")).unwrap_or_else(|| "Raccourcis".into())
+}
+
+/// Tuiles : les raccourcis, puis le « + » qui ouvre le dossier.
+fn cols(tiles: usize) -> usize {
+    tiles.clamp(1, MAX_COLS)
+}
+
+fn panel_size(tiles: usize) -> (f32, f32) {
+    let (c, r) = (cols(tiles) as i32, tiles.div_ceil(MAX_COLS).max(1) as i32);
+    ((PAD * 2 + TILE * c + GAP * (c - 1)) as f32, (PAD * 2 + TILE * r + GAP * (r - 1)) as f32)
+}
+
 /// Index de la tuile sous (x, y), ou -1.
-fn hit(x: i32, y: i32) -> i32 {
+fn hit(x: i32, y: i32, tiles: usize) -> i32 {
     let (cx, cy) = (x - PAD, y - PAD);
     if cx < 0 || cy < 0 || cx % (TILE + GAP) >= TILE || cy % (TILE + GAP) >= TILE {
         return -1;
     }
-    let (col, row) = (cx / (TILE + GAP), cy / (TILE + GAP));
-    let i = row * COLS + col;
-    if col < COLS && (i as usize) < ITEMS.len() { i } else { -1 }
+    let (col, row) = ((cx / (TILE + GAP)) as usize, (cy / (TILE + GAP)) as usize);
+    let i = row * cols(tiles) + col;
+    if col < cols(tiles) && i < tiles { i as i32 } else { -1 }
 }
 
-fn tile_rect(i: i32) -> RECT {
-    let (x, y) = (PAD + (i % COLS) * (TILE + GAP), PAD + (i / COLS) * (TILE + GAP));
+fn tile_rect(i: usize, tiles: usize) -> RECT {
+    let (c, r) = ((i % cols(tiles)) as i32, (i / cols(tiles)) as i32);
+    let (x, y) = (PAD + c * (TILE + GAP), PAD + r * (TILE + GAP));
     RECT { left: x, top: y, right: x + TILE, bottom: y + TILE }
 }
 
+/// Premier lancement : quelques raccourcis de départ pour ne pas ouvrir un panneau vide.
+fn write_defaults(dir: &PathBuf) {
+    let win = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+    let url = |name: &str, target: &str, icon: &str| {
+        let ico = if icon.is_empty() { String::new() } else { format!("IconFile={icon}\r\nIconIndex=0\r\n") };
+        let _ = std::fs::write(dir.join(format!("{name}.url")), format!("[InternetShortcut]\r\nURL={target}\r\n{ico}"));
+    };
+    let _ = std::fs::create_dir_all(dir);
+    url("Fichiers", &format!("file:///{win}/explorer.exe").replace('\\', "/"), &format!(r"{win}\explorer.exe"));
+    url("Web", "https://www.google.com", "");
+    url("Calculatrice", &format!("file:///{win}/System32/calc.exe").replace('\\', "/"), &format!(r"{win}\System32\calc.exe"));
+    url("Réglages", "ms-settings:", &format!(r"{win}\ImmersiveControlPanel\SystemSettings.exe"));
+    let steam = r"C:\Program Files (x86)\Steam\steam.exe";
+    if std::path::Path::new(steam).exists() {
+        url("Steam", "steam://open/main", steam);
+    }
+}
+
+/// Logo du fichier tel que l'Explorateur l'affiche, converti pour AlphaBlend.
+unsafe fn file_icon(path: &[u16]) -> HBITMAP {
+    let mut sfi: SHFILEINFOW = zeroed();
+    if SHGetFileInfoW(path.as_ptr(), 0, &mut sfi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX) == 0 {
+        return null_mut();
+    }
+    let mut list: *mut c_void = null_mut();
+    if SHGetImageList(SHIL_EXTRALARGE as i32, &IID_IIMAGELIST, &mut list) != 0 {
+        return null_mut();
+    }
+    let hicon = ImageList_GetIcon(list as HIMAGELIST, sfi.iIcon, ILD_TRANSPARENT);
+    if hicon.is_null() {
+        return null_mut();
+    }
+    let mut bmi: BITMAPINFO = zeroed();
+    bmi.bmiHeader = BITMAPINFOHEADER {
+        biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: ICON, biHeight: -ICON,
+        biPlanes: 1, biBitCount: 32, biCompression: BI_RGB, ..zeroed()
+    };
+    let mut bits: *mut c_void = null_mut();
+    let dib = CreateDIBSection(null_mut(), &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+    let dc = CreateCompatibleDC(null_mut());
+    let old = SelectObject(dc, dib);
+    // sur un fond à 0, DrawIconEx produit directement du BGRA prémultiplié
+    DrawIconEx(dc, 0, 0, hicon, ICON, ICON, 0, null_mut(), DI_NORMAL);
+    GdiFlush();
+    let px = std::slice::from_raw_parts_mut(bits as *mut u32, (ICON * ICON) as usize);
+    if px.iter().all(|p| p >> 24 == 0) {
+        // vieille icône sans canal alpha : tout pixel non noir devient opaque
+        for p in px.iter_mut().filter(|p| **p != 0) {
+            *p |= 0xFF00_0000;
+        }
+    }
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    DestroyIcon(hicon);
+    dib
+}
+
+/// Relit le dossier s'il a changé depuis la dernière ouverture (ajout, suppression, renommage).
+unsafe fn reload_if_changed() {
+    let dir = folder();
+    if !dir.exists() {
+        write_defaults(&dir);
+    }
+    let stamp = std::fs::metadata(&dir).and_then(|m| m.modified()).ok();
+    if stamp.is_some() && ST.with_borrow(|s| s.loaded == stamp) {
+        return;
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect())
+        .unwrap_or_default();
+    files.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+    let items: Vec<Item> = files.iter().map(|p| {
+        let path: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
+        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        Item { name: stem.encode_utf16().collect(), icon: file_icon(&path), path }
+    }).collect();
+    let old = ST.with_borrow_mut(|s| {
+        s.loaded = stamp;
+        std::mem::replace(&mut s.items, items)
+    });
+    for it in old {
+        if !it.icon.is_null() {
+            DeleteObject(it.icon);
+        }
+    }
+}
+
 unsafe fn animate(h: HWND, target: f32) {
+    if target > 0.5 && ST.with_borrow(|s| s.t == 0.0) {
+        reload_if_changed();
+    }
     ST.with_borrow_mut(|s| {
         s.target = target;
         s.last = GetTickCount64();
@@ -87,7 +200,7 @@ unsafe fn animate(h: HWND, target: f32) {
 }
 
 unsafe fn step(h: HWND) {
-    let t = ST.with_borrow_mut(|s| {
+    let (t, done, tiles) = ST.with_borrow_mut(|s| {
         let now = GetTickCount64();
         let dt = (now - s.last) as f32;
         s.last = now;
@@ -96,20 +209,17 @@ unsafe fn step(h: HWND) {
         if (s.target - s.t).abs() < 0.002 {
             s.t = s.target;
         }
-        s.t
+        (s.t, s.t == s.target, s.items.len() + 1)
     });
-    if ST.with_borrow(|s| s.t == s.target) {
+    if done {
         KillTimer(h, 1);
     }
+    let (bw, bh) = panel_size(tiles);
     let size = |a: f32, b: f32| (a + (b - a) * t).round() as i32;
-    SetWindowPos(h, null_mut(), 0, 0, size(SMALL, BIG_W), size(SMALL, BIG_H),
+    SetWindowPos(h, null_hwnd(), 0, 0, size(SMALL, bw), size(SMALL, bh),
         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    SetLayeredWindowAttributes(h, 0, (IDLE_ALPHA + (255.0 - IDLE_ALPHA) * t.min(1.0) * 2.0).min(255.0) as u8, LWA_ALPHA);
+    SetLayeredWindowAttributes(h, 0, (IDLE_ALPHA + (255.0 - IDLE_ALPHA) * t * 2.0).min(255.0) as u8, LWA_ALPHA);
     InvalidateRect(h, null(), 0);
-}
-
-fn null_mut() -> HWND {
-    std::ptr::null_mut()
 }
 
 unsafe fn paint(h: HWND) {
@@ -125,43 +235,63 @@ unsafe fn paint(h: HWND) {
     SetBkMode(mem, TRANSPARENT as i32);
     let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
 
-    let (t, hover, icon_font, text_font) = ST.with_borrow(|s| (s.t, s.hover, s.icon_font, s.text_font));
-    // les couleurs s'additionnent au verre : baisser l'intensité revient à faire un fondu
-    let open = ((t - 0.45) / 0.55).clamp(0.0, 1.0);
-    let closed = (1.0 - t * 2.5).clamp(0.0, 1.0);
+    ST.with_borrow(|s| {
+        // les couleurs s'additionnent au verre : baisser l'intensité revient à faire un fondu
+        let open = ((s.t - 0.45) / 0.55).clamp(0.0, 1.0);
+        let closed = (1.0 - s.t * 2.5).clamp(0.0, 1.0);
 
-    if closed > 0.0 {
-        let b = CreateSolidBrush(rgb(210.0 * closed));
-        let old_b = SelectObject(mem, b);
-        for (dx, dy) in [(13, 13), (23, 13), (13, 23), (23, 23)] {
-            RoundRect(mem, dx, dy, dx + 9, dy + 9, 4, 4);
+        if closed > 0.0 {
+            let b = CreateSolidBrush(rgb(210.0 * closed));
+            let old_b = SelectObject(mem, b);
+            for (dx, dy) in [(13, 13), (23, 13), (13, 23), (23, 23)] {
+                RoundRect(mem, dx, dy, dx + 9, dy + 9, 4, 4);
+            }
+            SelectObject(mem, old_b);
+            DeleteObject(b);
         }
-        SelectObject(mem, old_b);
-        DeleteObject(b);
-    }
+        if open == 0.0 {
+            return;
+        }
 
-    if open > 0.0 {
-        for (i, (glyph, label, _)) in ITEMS.iter().enumerate() {
-            let r = tile_rect(i as i32);
-            let b = CreateSolidBrush(rgb(if hover == i as i32 { 62.0 } else { 26.0 } * open));
+        let tiles = s.items.len() + 1;
+        let src = CreateCompatibleDC(mem);
+        let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0,
+            SourceConstantAlpha: (255.0 * open) as u8, AlphaFormat: AC_SRC_ALPHA as u8 };
+        for i in 0..tiles {
+            let r = tile_rect(i, tiles);
+            let b = CreateSolidBrush(rgb(if s.hover == i as i32 { 62.0 } else { 26.0 } * open));
             let old_b = SelectObject(mem, b);
             RoundRect(mem, r.left, r.top, r.right + 1, r.bottom + 1, 22, 22);
             SelectObject(mem, old_b);
             DeleteObject(b);
 
-            SelectObject(mem, icon_font);
-            SetTextColor(mem, rgb(240.0 * open));
-            let mut ri = RECT { bottom: r.top + 58, top: r.top + 12, ..r };
-            DrawTextW(mem, glyph, 1, &mut ri, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            let (ix, iy) = (r.left + (TILE - ICON) / 2, r.top + 12);
+            let item = s.items.get(i);
+            match item {
+                Some(it) if !it.icon.is_null() => {
+                    let old = SelectObject(src, it.icon);
+                    AlphaBlend(mem, ix, iy, ICON, ICON, src, 0, 0, ICON, ICON, blend);
+                    SelectObject(src, old);
+                }
+                _ => {
+                    // pas de logo : première lettre du nom ; dernière tuile : « + » (glyphe Fluent)
+                    let glyph = item.map_or(0xE710, |it| it.name.first().copied().unwrap_or(b'?' as u16));
+                    SelectObject(mem, if item.is_some() { s.text_font } else { s.icon_font });
+                    SetTextColor(mem, rgb(230.0 * open));
+                    let mut ri = RECT { left: ix, top: iy, right: ix + ICON, bottom: iy + ICON };
+                    DrawTextW(mem, &glyph, 1, &mut ri, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+            }
 
-            SelectObject(mem, text_font);
-            SetTextColor(mem, rgb(200.0 * open));
-            let txt: Vec<u16> = label.encode_utf16().collect();
-            let mut rt = RECT { top: r.top + 60, bottom: r.bottom - 8, ..r };
-            DrawTextW(mem, txt.as_ptr(), txt.len() as i32, &mut rt,
+            let label = item.map_or(w("Ajouter")[..7].to_vec(), |it| it.name.clone());
+            SelectObject(mem, s.text_font);
+            SetTextColor(mem, rgb(205.0 * open));
+            let mut rt = RECT { left: r.left + 6, right: r.right - 6, top: r.top + 64, bottom: r.bottom - 6 };
+            DrawTextW(mem, label.as_ptr(), label.len() as i32, &mut rt,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
-    }
+        DeleteDC(src);
+    });
 
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
     SelectObject(mem, old_pen);
@@ -215,7 +345,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 animate(h, 1.0);
             }
             let changed = ST.with_borrow_mut(|s| {
-                let hv = if s.t > 0.9 { hit(x, y) } else { -1 };
+                let hv = if s.t > 0.9 { hit(x, y, s.items.len() + 1) } else { -1 };
                 std::mem::replace(&mut s.hover, hv) != hv
             });
             if changed {
@@ -250,10 +380,16 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             0
         }
         WM_LBUTTONUP => {
-            let hv = ST.with_borrow(|s| if s.t > 0.9 { s.hover } else { -1 });
-            if hv >= 0 {
-                let (_, _, target) = ITEMS[hv as usize];
-                ShellExecuteW(null_mut(), w("open").as_ptr(), w(target).as_ptr(), null(), null(), SW_SHOWNORMAL);
+            let target = ST.with_borrow(|s| {
+                if s.t <= 0.9 || s.hover < 0 {
+                    return None;
+                }
+                Some(s.items.get(s.hover as usize).map_or_else(
+                    || folder().as_os_str().encode_wide().chain(Some(0)).collect(),
+                    |it| it.path.clone()))
+            });
+            if let Some(path) = target {
+                ShellExecuteW(null_hwnd(), w("open").as_ptr(), path.as_ptr(), null(), null(), SW_SHOWNORMAL);
                 animate(h, 0.0);
             }
             0
@@ -273,6 +409,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
 
 fn main() {
     unsafe {
+        CoInitializeEx(null(), 2); // COINIT_APARTMENTTHREADED, requis par SHGetFileInfo
         let inst = GetModuleHandleW(null());
         let class = w("DESKTOUCH");
         let wc = WNDCLASSW {
@@ -285,7 +422,7 @@ fn main() {
         RegisterClassW(&wc);
         let h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
             class.as_ptr(), w("DESKTOUCH").as_ptr(), WS_POPUP,
-            X, Y, SMALL as i32, SMALL as i32, null_mut(), null_mut(), inst, null());
+            X, Y, SMALL as i32, SMALL as i32, null_hwnd(), null_mut(), inst, null());
         SetLayeredWindowAttributes(h, 0, IDLE_ALPHA as u8, LWA_ALPHA);
         ShowWindow(h, SW_SHOWNOACTIVATE);
         // juste au-dessus du bureau : visible sur le fond d'écran, caché par toute fenêtre ouverte
@@ -294,11 +431,15 @@ fn main() {
             SetWindowPos(h, desktop, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
         let mut msg: MSG = zeroed();
-        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+        while GetMessageW(&mut msg, null_hwnd(), 0, 0) > 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
+}
+
+fn null_mut<T>() -> *mut T {
+    std::ptr::null_mut()
 }
 
 #[cfg(test)]
@@ -307,11 +448,21 @@ mod tests {
 
     #[test]
     fn hit_test() {
-        assert_eq!(hit(PAD, PAD), 0);
-        assert_eq!(hit(PAD + TILE + GAP + 1, PAD), 1);
-        assert_eq!(hit(PAD + TILE + 2, PAD), -1); // dans l'espace entre deux tuiles
-        assert_eq!(hit(PAD, PAD + TILE + GAP), 3);
-        assert_eq!(hit(0, 0), -1);
-        assert_eq!(hit(PAD + 3 * (TILE + GAP), PAD), -1);
+        let n = 7; // 2 rangées de 4, la dernière incomplète
+        assert_eq!(hit(PAD, PAD, n), 0);
+        assert_eq!(hit(PAD + TILE + GAP + 1, PAD, n), 1);
+        assert_eq!(hit(PAD + TILE + 2, PAD, n), -1); // dans l'espace entre deux tuiles
+        assert_eq!(hit(PAD, PAD + TILE + GAP, n), 4);
+        assert_eq!(hit(PAD + 3 * (TILE + GAP), PAD + TILE + GAP, n), -1); // 8e case vide
+        assert_eq!(hit(0, 0, n), -1);
+        assert_eq!(hit(PAD + 4 * (TILE + GAP), PAD, n), -1);
+        assert_eq!(hit(PAD + TILE + GAP, PAD, 1), -1); // une seule tuile
+    }
+
+    #[test]
+    fn panel_grows_with_tiles() {
+        assert!(panel_size(4).0 > panel_size(2).0);
+        assert_eq!(panel_size(5).0, panel_size(4).0);
+        assert!(panel_size(5).1 > panel_size(4).1);
     }
 }
