@@ -1,95 +1,109 @@
 <div align="center">
 
-<img src="assets/desktouch-512.png" width="112" alt="Logo DESKTOUCH">
+<img src="assets/desktouch-512.png" width="112" alt="DESKTOUCH logo">
 
 # DESKTOUCH
 
-**Tes raccourcis, posés sur ton bureau.**
+**Your shortcuts, right on your desktop.**
 
-Un petit carré de verre sur le bureau Windows, façon AssistiveTouch : au survol, un panneau de raccourcis en sort comme une goutte.
+A small glass square that lives on your Windows desktop, AssistiveTouch-style: hover it and a panel of shortcuts flows out of it like a drop.
 
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%20%2F%2011-2b2d31?style=flat-square)
-![Rust natif](https://img.shields.io/badge/Rust-natif-2b2d31?style=flat-square)
-![0 % CPU au repos](https://img.shields.io/badge/CPU%20au%20repos-0%20%25-2b2d31?style=flat-square)
-![≈ 30 Mo de RAM](https://img.shields.io/badge/RAM-%E2%89%88%2030%20Mo-2b2d31?style=flat-square)
+![Native Rust](https://img.shields.io/badge/Rust-native-2b2d31?style=flat-square)
+![0% CPU at rest](https://img.shields.io/badge/CPU%20at%20rest-0%25-2b2d31?style=flat-square)
+![~30 MB RAM](https://img.shields.io/badge/RAM-~30%20MB-2b2d31?style=flat-square)
 
-<img src="docs/media/desktouch.gif" width="640" alt="DESKTOUCH en usage : survol, choix d'une appli, réorganisation">
+<img src="docs/media/desktouch.gif" width="640" alt="DESKTOUCH in use: hover, pick an app, rearrange">
 
-▶ [Vidéo de présentation (16 s)](docs/media/desktouch.mp4)
+▶ [Watch the 16 s presentation video](docs/media/desktouch.mp4)
+
+**[Download the latest release](https://github.com/DanyalRez/DESK-TOUCH/releases/latest)**
 
 </div>
 
 ---
 
-## Ce qu'il fait
+## What it does
 
 <table>
 <tr>
-<td width="50%"><img src="docs/media/bureau.png" alt="Le carré sur le bureau"></td>
-<td width="50%"><img src="docs/media/panneau.png" alt="Le panneau ouvert"></td>
+<td width="50%"><img src="docs/media/desktop.png" alt="The square on the desktop"></td>
+<td width="50%"><img src="docs/media/panel.png" alt="The open panel"></td>
 </tr>
 <tr>
-<td><b>Discret.</b> Un carré de verre, à l'opacité de ton choix, posé sur le fond d'écran comme une icône : sous toutes les fenêtres, toujours là avec Win + D.</td>
-<td><b>Au survol, il s'ouvre.</b> Le panneau sort du carré comme une goutte, avec les vrais logos de tes applis et jeux. Un clic les lance.</td>
+<td><b>Out of the way.</b> A glass square at the opacity you choose, sitting on your wallpaper like an icon: under every window, still there after Win + D.</td>
+<td><b>Hover, and it opens.</b> The panel flows out of the square with the real logos of your apps and games. One click launches them.</td>
 </tr>
 <tr>
-<td><img src="docs/media/reorganiser.png" alt="Réorganiser les tuiles"></td>
-<td><img src="docs/media/themes.png" alt="Les trois thèmes des réglages"></td>
+<td><img src="docs/media/reorder.png" alt="Rearranging tiles"></td>
+<td><img src="docs/media/themes.png" alt="The three themes"></td>
 </tr>
 <tr>
-<td><b>À ta façon.</b> Glisse une tuile pour changer l'ordre ; déplace le carré où tu veux, même sur un autre écran.</td>
-<td><b>Trois thèmes.</b> Liquid Glass, Sombre ou Clair, plus la taille des icônes, les colonnes, les noms et l'opacité.</td>
+<td><b>Your way.</b> Drag a tile to reorder; drag the square anywhere, even to another screen.</td>
+<td><b>Three themes.</b> Liquid Glass, Dark or Light, plus icon size, columns, names and opacity.</td>
 </tr>
 </table>
 
-## Installer
+## Install
+
+1. Download **`DESKTOUCH.exe`** from the [latest release](https://github.com/DanyalRez/DESK-TOUCH/releases/latest).
+2. Run it. DESKTOUCH installs itself in `%LOCALAPPDATA%\DESKTOUCH`, adds a Start menu entry, starts with Windows (you can turn that off) and creates a few example shortcuts.
+
+That's it: no installer, no admin rights. Windows SmartScreen may warn about an unknown publisher the first time (the app isn't code-signed): *More info → Run anyway*.
+
+### Updates
+
+**Settings → Updates → Check.** If a newer release exists, the button turns into **Install vX.Y.Z**: one click downloads it, swaps the app and restarts it. DESKTOUCH also checks quietly once at each launch.
+
+## Use
+
+| Gesture | Effect |
+| --- | --- |
+| Hover the square | the panel opens (or on click, see settings) |
+| Click a tile | launches the app |
+| Drag a tile | reorders |
+| Press the square and move | moves it (position is remembered) |
+| **Add** (last tile) | pick an app, shortcut or game in the Open dialog |
+| Right-click a tile | remove it |
+| Right-click elsewhere | menu |
+
+### Settings
+
+Click the DESKTOUCH icon in the taskbar's **hidden icons** (right-click for the menu).
+
+- **Theme**: Liquid Glass, Dark, Light
+- **Icon size**: small, medium, large
+- **Columns**: 3 to 6
+- **Panel opens**: on hover or on click
+- **Logo opacity** on the desktop
+- **Show names** (on two lines, never cut off)
+- **Launch at startup**
+- **Logo position**: reset
+- **Updates**: check and install
+
+## Under the hood
+
+- **Native Rust**, a single dependency (`windows-sys`), a ~350 KB executable.
+- **Home-made liquid glass**: the background is captured and blurred, a lens refracts the edges, colours split slightly in the corners, a light rim follows the shape. The square and the panel merge like two drops before they separate.
+- **Spring animations** paced to your screen's refresh rate; **nothing runs at rest**.
+- **Sharp on high-DPI screens**: rendered at native resolution, 256 px app logos.
+
+## Build from source
 
 ```bash
 cargo build --release
 target/release/desktouch.exe
 ```
 
-Il faut Rust (cible `x86_64-pc-windows-gnu`, MinGW pour `windres` qui intègre l'icône). Au premier lancement, DESKTOUCH s'inscrit au démarrage de Windows (désactivable dans les réglages) et crée quelques raccourcis d'exemple.
+Needs Rust with the `x86_64-pc-windows-gnu` target and MinGW (`windres` embeds the icon). A build run from a `target` folder doesn't install itself, to keep development simple.
 
-## Utiliser
+## Files next to the executable
 
-| Geste | Effet |
-| --- | --- |
-| Survol du carré | le panneau s'ouvre (ou au clic, selon le réglage) |
-| Clic sur une tuile | lance l'appli |
-| Glisser une tuile | change l'ordre |
-| Appuyer sur le carré et bouger | le déplace (position gardée) |
-| **Ajouter** (dernière tuile) | choisis une appli, un raccourci ou un jeu dans la fenêtre « Ouvrir » |
-| Clic droit sur une tuile | la retirer |
-| Clic droit ailleurs | menu |
+- `Shortcuts/`: the panel's shortcuts (`.lnk`, `.url`)
+- `settings.txt`, `position.txt`, `order.txt`: settings, square position, tile order
 
-### Réglages
+## Credits
 
-Clic sur l'icône DESKTOUCH dans les **icônes cachées** de la barre des tâches (clic droit : menu).
-
-- **Thème** : Liquid Glass, Sombre, Clair
-- **Taille des icônes** : petite, moyenne, grande
-- **Colonnes** : 3 à 6
-- **Ouverture du panneau** : au survol ou au clic
-- **Opacité du logo** sur le bureau
-- **Afficher les noms** (sur deux lignes, jamais coupés)
-- **Lancer au démarrage**
-- **Position du logo** : réinitialiser
-
-## Sous le capot
-
-- **Rust natif**, une seule dépendance (`windows-sys`) ; un exe d'environ 350 Ko.
-- **Verre liquide calculé maison** : le fond est capturé puis flouté, une lentille réfracte les bords, les couleurs se décomposent légèrement dans les coins, un liseré lumineux suit la forme. Le carré et le panneau fusionnent comme deux gouttes avant de se séparer.
-- **Animations à ressort** cadencées sur la fréquence de l'écran ; **rien ne tourne au repos**.
-- **Net en haute définition** : rendu à la résolution native, logos en 256 px.
-
-## Fichiers à côté de l'exe
-
-- `Raccourcis/` : les raccourcis du panneau (`.lnk`, `.url`)
-- `reglages.txt`, `position.txt`, `ordre.txt` : réglages, position du carré, ordre des tuiles
-
-## Crédits
-
-- Recette du verre adaptée d'[AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Kyant, Apache-2.0).
-- Logo : `assets/desktouch.svg` (source), `assets/desktouch.ico` (16 à 256 px) ; pistes explorées dans `docs/logo/`.
-- Vidéo : faite avec [HyperFrames](https://hyperframes.heygen.com) (`video/`), à partir de vraies prises de l'app ; sons d'interface Pixabay (`video/assets/sfx/CREDITS.md`).
+- Glass recipe adapted from [AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Kyant, Apache-2.0).
+- Logo: `assets/desktouch.svg` (source), `assets/desktouch.ico` (16 to 256 px); explored directions in `docs/logo/`.
+- Video: made with [HyperFrames](https://hyperframes.heygen.com) (`video/`) from real recordings of the app; UI sounds from Pixabay (`video/assets/sfx/CREDITS.md`).

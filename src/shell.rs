@@ -18,6 +18,7 @@ use windows_sys::{
             Com::{CoCreateInstance, CLSCTX_INPROC_SERVER},
             LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW},
             Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ},
+            Threading::CreateMutexW,
         },
         UI::{
             Controls::{Dialogs::*, ImageList_GetIcon, HIMAGELIST, ILD_TRANSPARENT},
@@ -61,7 +62,60 @@ pub fn beside_exe(name: &str) -> PathBuf {
 }
 
 pub fn folder() -> PathBuf {
-    beside_exe("Raccourcis")
+    beside_exe("Shortcuts")
+}
+
+/// Une seule instance : sinon deux carrés se superposeraient. Une deuxième instance ouvre les réglages
+/// de la première puis s'arrête ; après une mise à jour (`wait`), on attend que l'ancienne ait quitté.
+pub unsafe fn single_instance(wait: bool, show_settings: u32) -> bool {
+    for _ in 0..30 {
+        let m = CreateMutexW(null(), 0, w("DESKTOUCH_instance").as_ptr());
+        if GetLastError() != ERROR_ALREADY_EXISTS {
+            return true; // le verrou reste ouvert pendant toute la vie de l'app
+        }
+        CloseHandle(m);
+        if !wait {
+            let other = FindWindowW(w("DESKTOUCH").as_ptr(), w("DESKTOUCH").as_ptr());
+            if !other.is_null() {
+                PostMessageW(other, show_settings, 0, WM_LBUTTONUP as isize);
+            }
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    false
+}
+
+/// Lancé depuis un téléchargement : s'installe dans %LOCALAPPDATA%\DESKTOUCH, se met dans le menu Démarrer,
+/// lance la copie installée et renvoie vrai (cette instance-ci s'arrête alors).
+pub unsafe fn self_install() -> bool {
+    let (Ok(exe), Ok(local)) = (std::env::current_exe(), std::env::var("LOCALAPPDATA")) else { return false };
+    let dir = PathBuf::from(local).join("DESKTOUCH");
+    let here = exe.parent().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
+    // shortcut: un exe lancé depuis un dossier de compilation (…\target\…) ne s'installe pas, pour développer
+    if here == dir.to_string_lossy().to_lowercase() || here.contains("\\target\\") || here.ends_with("\\target") {
+        return false;
+    }
+    let dest = dir.join("DESKTOUCH.exe");
+    if std::fs::create_dir_all(&dir).is_err() || std::fs::copy(&exe, &dest).is_err() {
+        return false; // pas installable : on tourne simplement là où on est
+    }
+    if let Ok(roaming) = std::env::var("APPDATA") {
+        let menu = PathBuf::from(roaming).join(r"Microsoft\Windows\Start Menu\Programs\DESKTOUCH.lnk");
+        create_lnk(&dest.to_string_lossy(), &menu);
+    }
+    ShellExecuteW(null_mut(), w("open").as_ptr(), wide_path(&dest).as_ptr(), null(), null(), SW_SHOWNORMAL);
+    true
+}
+
+/// Les versions françaises rangeaient tout sous des noms français : on les renomme une fois.
+pub fn migrate_files() {
+    for (old, new) in [("Raccourcis", "Shortcuts"), ("reglages.txt", "settings.txt"), ("ordre.txt", "order.txt")] {
+        let (o, n) = (beside_exe(old), beside_exe(new));
+        if o.exists() && !n.exists() {
+            let _ = std::fs::rename(o, n);
+        }
+    }
 }
 
 // ---------- réglages ----------
@@ -77,7 +131,7 @@ pub struct Config {
     pub click_open: bool, // ouvrir au clic plutôt qu'au survol
 }
 
-pub const THEMES: [&str; 3] = ["Liquid Glass", "Sombre", "Clair"];
+pub const THEMES: [&str; 3] = ["Liquid Glass", "Dark", "Light"];
 
 impl Default for Config {
     fn default() -> Self {
@@ -89,14 +143,15 @@ pub fn parse_config(s: &str) -> Config {
     let mut c = Config::default();
     for line in s.lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
+        // clés anglaises, et les anciennes clés françaises pour les fichiers déjà enregistrés
         match (k.trim(), v.trim()) {
             ("theme", v) => c.theme = v.parse().unwrap_or(0).min(THEMES.len() - 1),
-            ("opacite", v) => c.opacity = v.parse::<f32>().map_or(c.opacity, |p| (p / 100.0).clamp(0.15, 1.0)),
-            ("demarrage", v) => c.startup = v != "0",
-            ("taille", v) => c.icon_size = v.parse().unwrap_or(1).min(2),
-            ("colonnes", v) => c.cols = v.parse().unwrap_or(4).clamp(3, 6),
-            ("noms", v) => c.names = v != "0",
-            ("ouverture", v) => c.click_open = v == "clic",
+            ("opacity" | "opacite", v) => c.opacity = v.parse::<f32>().map_or(c.opacity, |p| (p / 100.0).clamp(0.15, 1.0)),
+            ("startup" | "demarrage", v) => c.startup = v != "0",
+            ("icon_size" | "taille", v) => c.icon_size = v.parse().unwrap_or(1).min(2),
+            ("columns" | "colonnes", v) => c.cols = v.parse().unwrap_or(4).clamp(3, 6),
+            ("names" | "noms", v) => c.names = v != "0",
+            ("open" | "ouverture", v) => c.click_open = v == "click" || v == "clic",
             _ => {}
         }
     }
@@ -104,14 +159,14 @@ pub fn parse_config(s: &str) -> Config {
 }
 
 pub fn load_config() -> Config {
-    std::fs::read_to_string(beside_exe("reglages.txt")).map_or_else(|_| Config::default(), |s| parse_config(&s))
+    std::fs::read_to_string(beside_exe("settings.txt")).map_or_else(|_| Config::default(), |s| parse_config(&s))
 }
 
 pub fn save_config(c: &Config) {
-    let s = format!("theme={}\nopacite={}\ndemarrage={}\ntaille={}\ncolonnes={}\nnoms={}\nouverture={}\n",
+    let s = format!("theme={}\nopacity={}\nstartup={}\nicon_size={}\ncolumns={}\nnames={}\nopen={}\n",
         c.theme, (c.opacity * 100.0).round(), c.startup as u8, c.icon_size, c.cols, c.names as u8,
-        if c.click_open { "clic" } else { "survol" });
-    let _ = std::fs::write(beside_exe("reglages.txt"), s);
+        if c.click_open { "click" } else { "hover" });
+    let _ = std::fs::write(beside_exe("settings.txt"), s);
 }
 
 /// Position enregistrée « x y ».
@@ -140,7 +195,7 @@ pub fn sort_key(order: &[&str], file: &str) -> (usize, String) {
 
 pub fn save_order(items: &[Item]) {
     let s: Vec<&str> = items.iter().map(|it| it.file.as_str()).collect();
-    let _ = std::fs::write(beside_exe("ordre.txt"), s.join("\n"));
+    let _ = std::fs::write(beside_exe("order.txt"), s.join("\n"));
 }
 
 /// Lancement à l'ouverture de session ; réécrit à chaque démarrage pour suivre l'exe s'il a bougé.
@@ -162,11 +217,11 @@ fn write_defaults(dir: &Path) {
     let win = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     let _ = std::fs::create_dir_all(dir);
     let _ = std::fs::write(dir.join("Web.url"), "[InternetShortcut]\r\nURL=https://www.google.com\r\n");
-    let _ = std::fs::write(dir.join("Réglages.url"), format!(
+    let _ = std::fs::write(dir.join("Settings.url"), format!(
         "[InternetShortcut]\r\nURL=ms-settings:\r\nIconFile={win}\\ImmersiveControlPanel\\SystemSettings.exe\r\nIconIndex=0\r\n"));
     unsafe {
-        create_lnk(&format!(r"{win}\explorer.exe"), &dir.join("Fichiers.lnk"));
-        create_lnk(&format!(r"{win}\System32\calc.exe"), &dir.join("Calculatrice.lnk"));
+        create_lnk(&format!(r"{win}\explorer.exe"), &dir.join("Files.lnk"));
+        create_lnk(&format!(r"{win}\System32\calc.exe"), &dir.join("Calculator.lnk"));
     }
 }
 
@@ -184,7 +239,7 @@ pub unsafe fn load_items(loaded: Option<std::time::SystemTime>) -> Option<(Vec<I
         .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect())
         .unwrap_or_default();
     // ordre choisi par glisser-déposer, puis alphabétique pour les nouveaux venus
-    let order = std::fs::read_to_string(beside_exe("ordre.txt")).unwrap_or_default();
+    let order = std::fs::read_to_string(beside_exe("order.txt")).unwrap_or_default();
     let order: Vec<&str> = order.lines().collect();
     files.sort_by_key(|p| sort_key(&order, &p.file_name().unwrap_or_default().to_string_lossy()));
     let items = files.iter().map(|p| {
@@ -231,10 +286,10 @@ unsafe fn create_lnk(target: &str, dest: &Path) -> bool {
 /// Fenêtre « Ouvrir » de Windows, dans le menu Démarrer : applications, raccourcis, jeux Steam.
 pub unsafe fn pick_file(owner: HWND) -> Option<PathBuf> {
     let mut buf = vec![0u16; 2048];
-    let filter: Vec<u16> = "Applications et raccourcis\0*.exe;*.lnk;*.url;*.bat;*.cmd\0Tous les fichiers\0*.*\0\0"
+    let filter: Vec<u16> = "Apps and shortcuts\0*.exe;*.lnk;*.url;*.bat;*.cmd\0All files\0*.*\0\0"
         .encode_utf16().collect();
     let start = std::env::var("ProgramData").map(|p| format!(r"{p}\Microsoft\Windows\Start Menu\Programs")).unwrap_or_default();
-    let (start, title) = (w(&start), w("Ajouter un raccourci"));
+    let (start, title) = (w(&start), w("Add a shortcut"));
     let mut ofn: OPENFILENAMEW = zeroed();
     ofn.lStructSize = size_of::<OPENFILENAMEW>() as u32;
     ofn.hwndOwner = owner;
@@ -252,7 +307,7 @@ pub unsafe fn pick_file(owner: HWND) -> Option<PathBuf> {
 pub unsafe fn add_shortcut(src: &Path) -> bool {
     let dir = folder();
     let _ = std::fs::create_dir_all(&dir);
-    let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Raccourci".into());
+    let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Shortcut".into());
     let ext = src.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     let free = |e: &str| (1..).map(|i| if i == 1 { dir.join(format!("{stem}.{e}")) } else { dir.join(format!("{stem} {i}.{e}")) })
         .find(|p| !p.exists()).expect("nom libre");
@@ -412,7 +467,7 @@ pub unsafe fn tile_layer(item: Option<&Item>, cw: usize, ch: usize, icon: usize,
     let mut texts = Vec::new();
     if names {
         texts.push(Text {
-            s: item.map_or("Ajouter", |it| it.name.as_str()),
+            s: item.map_or("Add", |it| it.name.as_str()),
             r: RECT { left: (4.0 * s) as i32, right: cw as i32 - (4.0 * s) as i32,
                 top: icon_top + icon as i32 + (4.0 * s) as i32, bottom: ch as i32 - (1.0 * s) as i32 },
             size: 11.5 * s, weight: 500, flags: DT_CENTER | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS,
@@ -570,7 +625,10 @@ colonnes=9
 noms=0
 ouverture=clic");
         assert_eq!((c.icon_size, c.cols, c.names, c.click_open), (2, 6, false, true));
-        // aller-retour par le fichier
+        // clés anglaises (format actuel)
+        let e = parse_config("theme=1\nopacity=40\nstartup=0\nicon_size=0\ncolumns=5\nnames=0\nopen=click\n");
+        assert_eq!(e, Config { theme: 1, opacity: 0.4, startup: false, icon_size: 0, cols: 5, names: false, click_open: true });
+        // aller-retour par le fichier (anciennes clés françaises)
         let c = Config { theme: 1, opacity: 0.4, startup: false, icon_size: 0, cols: 5, names: false, click_open: true };
         let s = format!("theme=1
 opacite=40

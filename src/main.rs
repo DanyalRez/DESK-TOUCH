@@ -5,6 +5,7 @@
 
 mod render;
 mod shell;
+mod update;
 
 use render::{smoothstep, Back, Frame, Layer, Look, Pill, Rgb, Rr, Spring};
 use shell::{Cell, Config, Item, Text};
@@ -29,6 +30,22 @@ use windows_sys::Win32::{
 const WM_MOUSELEAVE: u32 = 0x02A3; // absent de windows-sys
 const WM_DPICHANGED: u32 = 0x02E0;
 const WM_TRAY: u32 = WM_APP + 1;
+const WM_UPDATE: u32 = WM_APP + 3; // fin d'une vérification (wp 0) ou d'une installation (wp 1), depuis un thread
+const ROW_UPDATES: usize = 8;
+
+/// État des mises à jour, affiché sur le bouton de la ligne « Updates ».
+enum Upd {
+    Idle,
+    Checking,
+    Latest,
+    Available(update::Release),
+    Installing,
+    Failed,
+}
+
+/// Résultat posé par le thread réseau, lu à la réception de WM_UPDATE.
+static UPDATE_RESULT: std::sync::Mutex<Option<Result<Option<update::Release>, ()>>> = std::sync::Mutex::new(None);
+static INSTALL_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const T_OPEN: usize = 1;
 const T_CLOSE: usize = 2;
 const ID_SETTINGS: usize = 1;
@@ -56,15 +73,16 @@ enum Ctl {
     Button(&'static str),
 }
 
-const ROWS: [(&str, Ctl); 8] = [
-    ("Thème", Ctl::Seg(&shell::THEMES)),
-    ("Taille des icônes", Ctl::Seg(&["Petite", "Moyenne", "Grande"])),
-    ("Colonnes", Ctl::Seg(&["3", "4", "5", "6"])),
-    ("Ouverture du panneau", Ctl::Seg(&["Au survol", "Au clic"])),
-    ("Opacité du logo", Ctl::Slider),
-    ("Afficher les noms", Ctl::Toggle),
-    ("Lancer au démarrage", Ctl::Toggle),
-    ("Position du logo", Ctl::Button("Réinitialiser")),
+const ROWS: [(&str, Ctl); 9] = [
+    ("Theme", Ctl::Seg(&shell::THEMES)),
+    ("Icon size", Ctl::Seg(&["Small", "Medium", "Large"])),
+    ("Columns", Ctl::Seg(&["3", "4", "5", "6"])),
+    ("Panel opens", Ctl::Seg(&["On hover", "On click"])),
+    ("Logo opacity", Ctl::Slider),
+    ("Show names", Ctl::Toggle),
+    ("Launch at startup", Ctl::Toggle),
+    ("Logo position", Ctl::Button("Reset")),
+    ("Updates", Ctl::Button("Check")),
 ];
 
 fn row_height(c: &Ctl) -> f32 {
@@ -220,6 +238,8 @@ struct App {
     p_open: Spring,
     p_rows: Vec<Spring>, // une par ligne : case choisie, curseur ou interrupteur
     dragging: bool,
+    upd: Upd,
+    silent_check: bool, // vérification du démarrage : un échec ne s'affiche pas
     // boucle
     dirty_main: bool,
     dirty_prefs: bool,
@@ -515,6 +535,45 @@ impl App {
         self.kick();
     }
 
+    fn update_label(&self) -> String {
+        match &self.upd {
+            Upd::Idle => "Check".into(),
+            Upd::Checking => "Checking…".into(),
+            Upd::Latest => "Up to date".into(),
+            Upd::Available(r) => format!("Install {}", r.tag),
+            Upd::Installing => "Installing…".into(),
+            Upd::Failed => "Retry".into(),
+        }
+    }
+
+    /// Lance la vérification dans un thread ; la réponse revient par WM_UPDATE.
+    fn start_check(&mut self, silent: bool) {
+        self.upd = Upd::Checking;
+        self.silent_check = silent;
+        let h = self.main.hwnd as isize;
+        std::thread::spawn(move || {
+            let r = update::check();
+            *UPDATE_RESULT.lock().unwrap() = Some(r);
+            unsafe { PostMessageW(h as HWND, WM_UPDATE, 0, 0) };
+        });
+    }
+
+    unsafe fn update_click(&mut self) {
+        match &self.upd {
+            Upd::Idle | Upd::Latest | Upd::Failed => self.start_check(false),
+            Upd::Available(r) => {
+                let (rel, h) = (r.clone(), self.main.hwnd as isize);
+                self.upd = Upd::Installing;
+                std::thread::spawn(move || {
+                    INSTALL_OK.store(update::install(&rel), std::sync::atomic::Ordering::SeqCst);
+                    unsafe { PostMessageW(h as HWND, WM_UPDATE, 1, 0) };
+                });
+            }
+            Upd::Checking | Upd::Installing => {}
+        }
+        self.rebuild_prefs_layer();
+    }
+
     /// Remet le carré à sa place de départ et oublie la position enregistrée.
     unsafe fn reset_position(&mut self) {
         (self.sq_x, self.sq_y) = default_pos(self.scale);
@@ -540,8 +599,9 @@ impl App {
         };
         let label = |t: &'static str, rect: RECT, level: f32, flags| Text { s: t, r: rect, size: 12.5 * s, weight: 500, flags, level, glyph: false };
         let pct = format!("{} %", (self.cfg.opacity * 100.0).round());
+        let (upd_name, upd_button) = (format!("Updates · v{}", update::VERSION), self.update_label());
         let (tops, _) = row_tops();
-        let mut texts = vec![Text { s: "Réglages", r: r(22.0, 16.0, 296.0, 26.0), size: 17.0 * s, weight: 600,
+        let mut texts = vec![Text { s: "Settings", r: r(22.0, 16.0, 296.0, 26.0), size: 17.0 * s, weight: 600,
             flags: DT_LEFT | DT_VCENTER, level: 1.0, glyph: false }];
         for (i, (name, ctl)) in ROWS.iter().enumerate() {
             let y = tops[i];
@@ -559,10 +619,16 @@ impl App {
                 Ctl::Toggle | Ctl::Button(_) => {
                     let mut t = label(name, r(22.0, y, 190.0, 40.0), 1.0, DT_LEFT | DT_VCENTER);
                     t.size = 13.5 * s;
+                    if i == ROW_UPDATES {
+                        t.s = &upd_name;
+                    }
                     texts.push(t);
                     if let Ctl::Button(b) = ctl {
-                        let mut t = label(b, r(212.0, y + 6.0, 108.0, 28.0), 1.0, DT_CENTER | DT_VCENTER);
+                        let mut t = label(b, r(204.0, y + 6.0, 116.0, 28.0), 1.0, DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
                         t.weight = 600;
+                        if i == ROW_UPDATES {
+                            t.s = &upd_button;
+                        }
                         texts.push(t);
                     }
                 }
@@ -610,7 +676,7 @@ impl App {
                     pills.push(pill(at(275.0 + v * 20.0, y + 9.0, 22.0, 22.0, 11.0), [1.0; 3], 1.0, 0.6));
                 }
                 // bouton : s'éclaire au clic puis se calme
-                Ctl::Button(_) => pills.push(pill(at(212.0, y + 6.0, 108.0, 28.0, 14.0), ac, lerp(0.14, 0.45, v), 0.6)),
+                Ctl::Button(_) => pills.push(pill(at(204.0, y + 6.0, 116.0, 28.0, 14.0), ac, lerp(0.14, 0.45, v), 0.6)),
             }
         }
         let f = Frame {
@@ -649,7 +715,8 @@ impl App {
             Ctl::Button(_) => {
                 self.p_rows[i].snap(1.0);
                 self.p_rows[i].target = 0.0;
-                return self.reset_position();
+                self.kick();
+                return if i == ROW_UPDATES { self.update_click() } else { self.reset_position() };
             }
             Ctl::Toggle if i == 5 => self.cfg.names = !self.cfg.names,
             Ctl::Toggle => {
@@ -725,9 +792,9 @@ impl App {
 // ---------- actions qui ouvrent une fenêtre modale (à appeler hors de tout emprunt de l'app) ----------
 
 unsafe fn main_menu(h: HWND) {
-    let id = shell::menu(h, &[(ID_SETTINGS, "Réglages"), (ID_ADD, "Ajouter un raccourci…"),
-        (ID_FOLDER, "Ouvrir le dossier des raccourcis"), (ID_RESET, "Remettre le logo à sa place"), (0, ""),
-        (ID_QUIT, "Quitter DESKTOUCH")]);
+    let id = shell::menu(h, &[(ID_SETTINGS, "Settings"), (ID_ADD, "Add a shortcut…"),
+        (ID_FOLDER, "Open shortcuts folder"), (ID_RESET, "Reset logo position"), (0, ""),
+        (ID_QUIT, "Quit DESKTOUCH")]);
     match id {
         ID_SETTINGS => app(|a| a.show_prefs()),
         ID_ADD => add_flow(h),
@@ -937,7 +1004,7 @@ unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             });
             match target {
                 Some((name, path)) => {
-                    if shell::menu(h, &[(ID_REMOVE, &format!("Retirer « {name} »"))]) == ID_REMOVE && shell::remove_shortcut(&path) {
+                    if shell::menu(h, &[(ID_REMOVE, &format!("Remove “{name}”"))]) == ID_REMOVE && shell::remove_shortcut(&path) {
                         app(|a| a.reload(true));
                     }
                 }
@@ -988,6 +1055,25 @@ unsafe extern "system" fn main_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
                     a.recapture();
                     a.draw_main();
                 }
+            });
+            0
+        }
+        WM_UPDATE => {
+            let installed = wp == 1 && INSTALL_OK.load(std::sync::atomic::Ordering::SeqCst);
+            if installed {
+                DestroyWindow(h); // la nouvelle version vient d'être lancée : elle prend le relais
+                return 0;
+            }
+            app(|a| {
+                a.upd = match (wp, UPDATE_RESULT.lock().unwrap().take()) {
+                    (0, Some(Ok(Some(rel)))) => Upd::Available(rel),
+                    (0, Some(Ok(None))) => Upd::Latest,
+                    _ if a.silent_check => Upd::Idle,
+                    _ => Upd::Failed,
+                };
+                a.silent_check = false;
+                a.rebuild_prefs_layer();
+                a.kick();
             });
             0
         }
@@ -1094,6 +1180,11 @@ fn main() {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         CoInitializeEx(null(), 2); // COINIT_APARTMENTTHREADED, requis par SHGetFileInfo et ShellLink
+        update::cleanup_old();
+        if !shell::single_instance(std::env::args().any(|a| a == "--updated"), WM_TRAY) || shell::self_install() {
+            return;
+        }
+        shell::migrate_files();
         let cfg = shell::load_config();
         shell::set_startup(cfg.startup);
         shell::dark_menus();
@@ -1127,7 +1218,7 @@ fn main() {
                 Ctl::Toggle => Spring::new(0.0, 520.0, 0.75),
                 Ctl::Button(_) => Spring::new(0.0, 60.0, 1.0), // éclat qui s'éteint lentement
             }).collect(),
-            dragging: false, dirty_main: false, dirty_prefs: false, animating: false, last: Instant::now(),
+            dragging: false, upd: Upd::Idle, silent_check: true, dirty_main: false, dirty_prefs: false, animating: false, last: Instant::now(),
         };
         a.relayout();
         a.recapture();
@@ -1137,6 +1228,7 @@ fn main() {
         shell::pin_to_desktop(h); // après l'affichage, qui sinon la remonte devant les fenêtres
         TASKBAR_CREATED.set(RegisterWindowMessageW(shell::w("TaskbarCreated").as_ptr()));
         shell::tray(h, WM_TRAY, true);
+        app(|a| a.start_check(true)); // une vérification discrète par lancement
 
         let mut msg: MSG = zeroed();
         loop {
