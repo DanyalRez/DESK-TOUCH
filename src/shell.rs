@@ -102,6 +102,7 @@ pub unsafe fn self_install() -> bool {
     }
     if let Ok(roaming) = std::env::var("APPDATA") {
         let menu = PathBuf::from(roaming).join(r"Microsoft\Windows\Start Menu\Programs\DESKTOUCH.lnk");
+        let _ = menu.parent().map(std::fs::create_dir_all);
         create_lnk(&dest.to_string_lossy(), &menu);
     }
     ShellExecuteW(null_mut(), w("open").as_ptr(), wide_path(&dest).as_ptr(), null(), null(), SW_SHOWNORMAL);
