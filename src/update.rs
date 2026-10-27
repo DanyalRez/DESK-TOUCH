@@ -8,7 +8,7 @@ use windows_sys::Win32::{
     UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
 };
 
-const API: &str = "https://api.github.com/repos/DanyalRez/DESK-TOUCH/releases/latest";
+const API: &str = "https://api.github.com/repos/DanyalRez/Desktouch/releases/latest";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Debug, PartialEq)]

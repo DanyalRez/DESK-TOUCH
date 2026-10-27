@@ -17,7 +17,7 @@ A small glass square that lives on your Windows desktop, AssistiveTouch-style: h
 
 ▶ [Watch the 16 s presentation video](docs/media/desktouch.mp4)
 
-**[Download the latest release](https://github.com/DanyalRez/DESK-TOUCH/releases/latest)**
+**[Download the latest release](https://github.com/DanyalRez/Desktouch/releases/latest)**
 
 </div>
 
@@ -46,7 +46,7 @@ A small glass square that lives on your Windows desktop, AssistiveTouch-style: h
 
 ## Install
 
-1. Download **`DESKTOUCH.exe`** from the [latest release](https://github.com/DanyalRez/DESK-TOUCH/releases/latest).
+1. Download **`DESKTOUCH.exe`** from the [latest release](https://github.com/DanyalRez/Desktouch/releases/latest).
 2. Run it. DESKTOUCH installs itself in `%LOCALAPPDATA%\DESKTOUCH`, adds a Start menu entry, starts with Windows (you can turn that off) and creates a few example shortcuts.
 
 That's it: no installer, no admin rights. Windows SmartScreen may warn about an unknown publisher the first time (the app isn't code-signed): *More info → Run anyway*.
