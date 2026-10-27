@@ -1181,7 +1181,9 @@ fn main() {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         CoInitializeEx(null(), 2); // COINIT_APARTMENTTHREADED, requis par SHGetFileInfo et ShellLink
         update::cleanup_old();
-        if !shell::single_instance(std::env::args().any(|a| a == "--updated"), WM_TRAY) || shell::self_install() {
+        // l'installation passe avant le contrôle d'instance unique : sinon un exe téléchargé, lancé pendant
+        // qu'une autre version tourne, ouvrait ses réglages et s'arrêtait sans jamais s'installer
+        if shell::self_install() || !shell::single_instance(std::env::args().any(|a| a == "--updated"), WM_TRAY) {
             return;
         }
         shell::migrate_files();

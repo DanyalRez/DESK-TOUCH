@@ -86,19 +86,41 @@ pub unsafe fn single_instance(wait: bool, show_settings: u32) -> bool {
     false
 }
 
-/// Lancé depuis un téléchargement : s'installe dans %LOCALAPPDATA%\DESKTOUCH, se met dans le menu Démarrer,
-/// lance la copie installée et renvoie vrai (cette instance-ci s'arrête alors).
+/// Exe lancé depuis un dossier de compilation (…\target\…) : il ne s'installe pas et ne touche pas au
+/// démarrage de Windows, sinon l'entrée pointerait vers un dossier de travail qui finit par bouger.
+pub fn is_dev_build() -> bool {
+    let here = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_string_lossy().to_lowercase()));
+    here.is_some_and(|h| h.contains("\\target\\") || h.ends_with("\\target"))
+}
+
+/// Lancé depuis un téléchargement : s'installe dans %LOCALAPPDATA%\DESKTOUCH, se met dans le menu Démarrer
+/// et au démarrage de Windows, lance la copie installée et renvoie vrai (cette instance-ci s'arrête alors).
 pub unsafe fn self_install() -> bool {
     let (Ok(exe), Ok(local)) = (std::env::current_exe(), std::env::var("LOCALAPPDATA")) else { return false };
     let dir = PathBuf::from(local).join("DESKTOUCH");
     let here = exe.parent().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
-    // shortcut: un exe lancé depuis un dossier de compilation (…\target\…) ne s'installe pas, pour développer
-    if here == dir.to_string_lossy().to_lowercase() || here.contains("\\target\\") || here.ends_with("\\target") {
+    if here == dir.to_string_lossy().to_lowercase() || is_dev_build() {
         return false;
     }
+    // une version déjà lancée (installée ou d'ailleurs) se ferme : son exe se libère et elle laisse la place
+    let other = FindWindowW(w("DESKTOUCH").as_ptr(), w("DESKTOUCH").as_ptr());
+    if !other.is_null() {
+        PostMessageW(other, WM_CLOSE, 0, 0);
+    }
     let dest = dir.join("DESKTOUCH.exe");
-    if std::fs::create_dir_all(&dir).is_err() || std::fs::copy(&exe, &dest).is_err() {
+    let _ = std::fs::create_dir_all(&dir);
+    let copied = (0..25).any(|i| {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        std::fs::copy(&exe, &dest).is_ok()
+    });
+    if !copied {
         return false; // pas installable : on tourne simplement là où on est
+    }
+    // la copie installée s'inscrit aussi à son lancement ; on le fait dès maintenant au cas où elle tarderait
+    if load_config().startup {
+        write_run_key(&dest);
     }
     if let Ok(roaming) = std::env::var("APPDATA") {
         let menu = PathBuf::from(roaming).join(r"Microsoft\Windows\Start Menu\Programs\DESKTOUCH.lnk");
@@ -201,11 +223,19 @@ pub fn save_order(items: &[Item]) {
 
 /// Lancement à l'ouverture de session ; réécrit à chaque démarrage pour suivre l'exe s'il a bougé.
 pub unsafe fn set_startup(on: bool) {
+    if is_dev_build() {
+        return; // voir is_dev_build : seule la copie installée décide du démarrage
+    }
     if !on {
         RegDeleteKeyValueW(HKEY_CURRENT_USER, w(RUN_KEY).as_ptr(), w("DESKTOUCH").as_ptr());
         return;
     }
-    let Ok(exe) = std::env::current_exe() else { return };
+    if let Ok(exe) = std::env::current_exe() {
+        write_run_key(&exe);
+    }
+}
+
+unsafe fn write_run_key(exe: &Path) {
     let cmd = w(&format!("\"{}\"", exe.display()));
     RegSetKeyValueW(HKEY_CURRENT_USER, w(RUN_KEY).as_ptr(), w("DESKTOUCH").as_ptr(), REG_SZ,
         cmd.as_ptr() as _, (cmd.len() * 2) as u32);
